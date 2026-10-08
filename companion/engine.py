@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import re
 import statistics
 import subprocess
@@ -45,12 +46,19 @@ def audio_duration(path):
 
 
 def choose_format(sources, layout, options):
-    if options.get("outputWidth") and options.get("outputHeight"):
-        width, height = int(options["outputWidth"]), int(options["outputHeight"])
+    if not sources:
+        raise ValueError("No eligible video sources")
+    short_sides = {min(int(s["width"]), int(s["height"])) for s in sources}
+    base = next(iter(short_sides)) if len(short_sides) == 1 and next(iter(short_sides)) in (720, 2160) else 1080
+    ratios = [int(s["width"]) / int(s["height"]) for s in sources]
+    common = max(ratios) - min(ratios) <= sum(ratios) / len(ratios) * 0.02
+    ratio = sum(ratios) / len(ratios) if common else 16 / 9
+    if layout == "three-pane" and ratio < 1:
+        ratio = 16 / 9
+    if ratio >= 1:
+        width, height = 2 * round(base * ratio / 2), base
     else:
-        short_sides = {min(int(s["width"]), int(s["height"])) for s in sources}
-        base = next(iter(short_sides)) if len(short_sides) == 1 and next(iter(short_sides)) in (720, 2160) else 1080
-        width, height = (round(base * 16 / 9), base)
+        width, height = base, 2 * round(base / ratio / 2)
     fps = int(options.get("outputFps") or (60 if all(59.5 <= float(s["fps"]) <= 60.5 for s in sources) else 30))
     if width < 320 or height < 320 or width > 7680 or height > 7680 or fps not in (24, 25, 30, 50, 60):
         raise ValueError("Unsupported render size or frame rate")
@@ -129,22 +137,38 @@ class Clip:
     pane: int
     segment_id: int | None
     accent: bool
+    crop_center: float = 0.5
+    face_track: tuple[tuple[float, float], ...] = ()
+
+
+def option_range(options, key, phase, default):
+    lower = max(0.0, min(1.0, float(options.get(key + "Min", options.get(key, default)))))
+    upper = max(lower, min(1.0, float(options.get(key + "Max", options.get(key, default)))))
+    return lower + (upper - lower) * max(0.0, min(1.0, phase))
 
 
 def edit_plan(sources, beats, options, layout, cancel=None):
     if not sources:
         raise ValueError("No eligible video sources")
+    if layout == "three-pane" and options.get("useVerticalVideosOnly"):
+        sources = [source for source in sources if int(source["height"]) > int(source["width"])]
+        if not sources:
+            raise ValueError("No vertical source videos are eligible for three-pane mode")
     style = options.get("style", "rhythmic-polish")
     speed = {"cinematic": 1.6, "rhythmic-polish": 1.0, "high-energy": 0.65}.get(style, 1.0)
-    pacing = max(0.0, min(1.0, float(options.get("pacing", 0.5))))
-    target = max(float(options.get("minClipSeconds", 1)), min(float(options.get("maxClipSeconds", 5)),
-                 speed * (3.2 - 2 * pacing)))
     duration = beats[-1]
     phrases = beats[::8]
     cuts = [0.0]
     pos = 0.0
-    adherence = max(0.0, min(1.0, float(options.get("beatAdherence", 0.8))))
-    while pos + target < duration:
+    adherence = max(0.0, min(1.0, float(options.get("beatAdherence", 0.95))))
+    while True:
+        nearby = [b - a for a, b in zip(beats, beats[1:]) if pos - 2 <= a <= pos + 2 and b > a]
+        beat_interval = statistics.median(nearby) if nearby else 1.0
+        pace = option_range(options, "pacing", max(0.0, min(1.0, (1.5 - beat_interval) / 1.0)), 0.5)
+        target = max(float(options.get("minClipSeconds", 1)), min(float(options.get("maxClipSeconds", 5)),
+                     speed * (3.2 - 2 * pace)))
+        if pos + target >= duration:
+            break
         desired = pos + target
         nearest = min(beats, key=lambda b: abs(b - desired))
         near_phrase = min(phrases, key=lambda b: abs(b - desired))
@@ -157,6 +181,18 @@ def edit_plan(sources, beats, options, layout, cancel=None):
         pos = nxt
     cuts.append(duration)
     pane_count = 3 if layout == "three-pane" else 1
+    selection = options.get("selectionMode", "center") if pane_count == 3 and not options.get("useVerticalVideosOnly") else "center"
+    if selection not in ("center", "random", "face"):
+        raise ValueError("Unknown portrait slice selection mode")
+    analyzer = None
+    if selection == "face":
+        from face_analysis import FaceAnalyzer
+        analyzer = FaceAnalyzer()
+    pane_aspect = None
+    if pane_count == 3:
+        output_width, output_height, _ = choose_format(sources, layout, options)
+        pane_aspect = output_width / (3 * output_height)
+    rng = random.Random(options.get("randomSeed"))
     # A large studio may contain far more videos than the track can show. Decode only
     # those that can actually occupy a cut while keeping format preflight on every source.
     active = sources[:min(len(sources), (len(cuts) - 1) * pane_count)]
@@ -176,21 +212,52 @@ def edit_plan(sources, beats, options, layout, cancel=None):
             else:
                 repeat = 1 + round((1 - diversity) * 3)
                 source = usable[(len(usable) + (position - len(usable)) // repeat) % len(usable)]
-            sid = int(source["id"])
-            pool = [range_ for range_ in pools[sid] if not source.get("tagOnly") or range_[1] - range_[0] >= b - a]
-            if not pool:
-                raise ValueError(f"Video {sid} has no timed segment long enough for a {b-a:.2f}s edit")
-            index = counters[sid] % len(pool)
-            counters[sid] += 1
-            start, end, segment_id, _quality = pool[index]
             length = b - a
-            if end - start < length:
-                start = max(0.0, end - length)
-            else:
-                start = start + (counters[sid] * 0.618 % 1) * (end - start - length)
+            candidates = [source] if selection != "face" else [source] + [s for s in usable if s is not source]
+            picked = None
+            for candidate in candidates:
+                sid = int(candidate["id"])
+                pool = [range_ for range_ in pools[sid] if not candidate.get("tagOnly") or range_[1] - range_[0] >= length]
+                if not pool:
+                    continue
+                for range_index in range(len(pool)):
+                    start, end, segment_id, _quality = pool[(counters[sid] + range_index) % len(pool)]
+                    if end - start < length:
+                        if candidate.get("tagOnly"):
+                            continue
+                        starts = [max(0.0, end - length)]
+                    else:
+                        free = end - start - length
+                        starts = [start + fraction * free for fraction in
+                                  ((0.5, 0.2, 0.8) if selection == "face" else ((counters[sid] + 1) * 0.618 % 1,))]
+                    for candidate_start in starts:
+                        face_track = ()
+                        center = 0.5
+                        if selection == "face":
+                            face_track = analyzer.analyze(candidate["path"], candidate_start, length, pane_aspect,
+                                                          bool(options.get("keepFaceCentered", True)), cancel)
+                            if face_track is None:
+                                continue
+                            center = face_track[0][1]
+                        elif selection == "random":
+                            crop_fraction = min(1.0, pane_aspect * int(candidate["height"]) / int(candidate["width"]))
+                            center = rng.uniform(crop_fraction / 2, 1 - crop_fraction / 2)
+                        picked = (candidate, candidate_start, segment_id, center, face_track)
+                        counters[sid] += 1
+                        break
+                    if picked:
+                        break
+                if picked:
+                    break
+            if picked is None:
+                if selection == "face":
+                    raise ValueError(f"No detectable face throughout a usable {length:.2f}s source range at {a:.2f}s; Face slice rejects that edit point")
+                raise ValueError(f"Video {int(source['id'])} has no timed segment long enough for a {length:.2f}s edit")
+            source, start, segment_id, center, face_track = picked
+            sid = int(source["id"])
             phrase_accent = any(abs(a - phrase) < 0.12 for phrase in phrases)
             result.append(Clip(sid, source["path"], start, length, a, pane, segment_id,
-                               phrase_accent or (style == "high-energy" and slot % 4 == 0)))
+                               phrase_accent or (style == "high-energy" and slot % 4 == 0), center, face_track))
     return result
 
 

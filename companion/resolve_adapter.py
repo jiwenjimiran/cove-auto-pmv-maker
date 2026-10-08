@@ -9,10 +9,11 @@ import json
 import uuid
 from pathlib import Path
 
-from engine import probe, run
+from engine import option_range, probe, run
 
 MODULES = Path(os.environ.get("RESOLVE_SCRIPT_API", r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting")) / "Modules"
 VALIDATION = Path(__file__).with_name("validated-version.json")
+VALIDATION_SCHEMA = 2
 sys.path.insert(0, str(MODULES))
 
 
@@ -36,7 +37,7 @@ def connect(require_validation=True):
             validated = json.loads(VALIDATION.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             validated = {}
-        if validated.get("version") != version or validated.get("product") != product:
+        if validated.get("version") != version or validated.get("product") != product or validated.get("schema") != VALIDATION_SCHEMA:
             raise RuntimeError(f"Resolve {version} needs the PMV render compatibility check. Run it from Auto PMV Maker settings in Cove.")
     return resolve
 
@@ -134,11 +135,17 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         treatment = options.get("colorTreatment", "matched")
         luma = {path: source_luma(path) for path in {clip.path for clip in clips}} if treatment == "matched" else {}
         transition_on = "dissolve" in (options.get("transitionFamilies") or [])
-        transition_intensity = max(0.0, min(1.0, float(options.get("transitionIntensity", 0))))
-        flash_intensity = max(0.0, min(1.0, float(options.get("flashIntensity", 0))))
-        glitch_intensity = max(0.0, min(1.0, float(options.get("glitchIntensity", 0))))
-        motion_intensity = max(0.0, min(1.0, float(options.get("motionIntensity", 0.25))))
         style = options.get("style", "rhythmic-polish")
+
+        def intensity(key, clip, default):
+            phase = (clip.record_start * 0.381966 + clip.pane * 0.217) % 1
+            return option_range(options, key, phase, default)
+
+        def center_at(clip, offset):
+            if not clip.face_track:
+                return clip.crop_center
+            position = min(clip.face_track, key=lambda point: abs(point[0] - offset))
+            return position[1]
 
         def append_part(clip, offset, length, record_start, track_index, opacity=None, composite=None):
             if cancel.is_set():
@@ -162,19 +169,23 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 base_zoom = pane_scale / fill_scale
                 visible_width = source_width * pane_scale
                 side_crop = max(0.0, (visible_width - pane_width) / 2)
+                desired_center = center_at(clip, offset + length / 2)
+                shift = max(-side_crop, min(side_crop, (desired_center - 0.5) * visible_width))
                 check(item.SetProperty("Scaling", resolve.SCALE_FILL), "pane scaling")
                 check(item.SetProperty("ZoomX", base_zoom), "pane zoom X")
                 check(item.SetProperty("ZoomY", base_zoom), "pane zoom Y")
-                check(item.SetProperty("Pan", (clip.pane - 1) * pane_width), "pane position")
-                check(item.SetProperty("CropLeft", side_crop), "left pane crop")
-                check(item.SetProperty("CropRight", side_crop), "right pane crop")
+                check(item.SetProperty("Pan", (clip.pane - 1) * pane_width - shift), "pane position")
+                check(item.SetProperty("CropLeft", side_crop + shift), "left pane crop")
+                check(item.SetProperty("CropRight", side_crop - shift), "right pane crop")
             else:
                 check(item.SetProperty("Scaling", resolve.SCALE_FILL), "full-screen scaling")
             if style == "high-energy" and clip.accent:
+                motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.1 * motion_intensity)
                 check(item.SetProperty("ZoomX", zoom), "accent zoom X")
                 check(item.SetProperty("ZoomY", zoom), "accent zoom Y")
             elif style == "cinematic":
+                motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.03 * motion_intensity)
                 check(item.SetProperty("ZoomX", zoom), "cinematic zoom X")
                 check(item.SetProperty("ZoomY", zoom), "cinematic zoom Y")
@@ -191,6 +202,9 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             pane_clips = sorted((clip for clip in clips if clip.pane == pane), key=lambda clip: clip.record_start)
             for position, clip in enumerate(pane_clips):
                 fade = 0.0
+                transition_intensity = intensity("transitionIntensity", clip, 0.25)
+                flash_intensity = intensity("flashIntensity", clip, 0)
+                glitch_intensity = intensity("glitchIntensity", clip, 0)
                 if position and transition_on and transition_intensity > 0:
                     previous = pane_clips[position - 1]
                     fade = min(0.5 * transition_intensity, clip.duration * 0.25, previous.duration * 0.25)
@@ -206,7 +220,14 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                     else:
                         append_part(clip, 0, fade, clip.record_start - fade,
                                     pane_count + pane + 1, opacity=50)
-                append_part(clip, fade, clip.duration - fade, clip.record_start, pane + 1)
+                if clip.face_track and len(clip.face_track) > 1:
+                    boundaries = [0.0] + [(left[0] + right[0]) / 2 for left, right in zip(clip.face_track, clip.face_track[1:])] + [clip.duration]
+                    for start, end in zip(boundaries, boundaries[1:]):
+                        start = max(start, fade)
+                        if end > start:
+                            append_part(clip, start, end - start, clip.record_start + start - fade, pane + 1)
+                else:
+                    append_part(clip, fade, clip.duration - fade, clip.record_start, pane + 1)
                 if clip.accent and flash_intensity > 0:
                     append_part(clip, 0, min(0.12, clip.duration), clip.record_start,
                                 pane_count * 2 + pane + 1, opacity=50 * flash_intensity,
@@ -215,7 +236,14 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                     effect = append_part(clip, min(0.08, clip.duration / 4), min(0.12, clip.duration / 4),
                                          clip.record_start, pane_count * 3 + pane + 1,
                                          opacity=35 * glitch_intensity, composite=resolve.COMPOSITE_DIFF)
-                    check(effect.SetProperty("Pan", ((pane - 1) * width / 3 if pane_count == 3 else 0) + 20 * glitch_intensity), "glitch offset")
+                    base_pan = 0
+                    if pane_count == 3:
+                        source_width, source_height = source_sizes[clip.path]
+                        visible_width = source_width * max((width / 3) / source_width, height / source_height)
+                        side_crop = max(0.0, (visible_width - width / 3) / 2)
+                        shift = max(-side_crop, min(side_crop, (center_at(clip, 0) - 0.5) * visible_width))
+                        base_pan = (pane - 1) * width / 3 - shift
+                    check(effect.SetProperty("Pan", base_pan + 20 * glitch_intensity), "glitch offset")
         audio_item = items[media_key(audio_path)]
         result = media_pool.AppendToTimeline([{"mediaPoolItem": audio_item, "startFrame": 0,
                                                "endFrame": max(1, round(max(c.record_start + c.duration for c in clips) * fps)) - 1,

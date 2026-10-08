@@ -1,7 +1,7 @@
 // src/index.jsx
 import React from "@cove/runtime/react";
 import { extensionFetch } from "@cove/runtime/api";
-var { useEffect, useState } = React;
+var { useEffect, useRef, useState } = React;
 var base = "/api/ext/pmv";
 var companionAsset = "/api/extensions/assets/io.github.jiwenjimiran.auto-pmv-maker/companion/AutoPmvMakerCompanion.zip";
 async function api(path, method = "GET", body) {
@@ -47,40 +47,58 @@ var styleHelp = {
   cinematic: "Longer shots, softer pacing, and cohesive color."
 };
 var stylePresets = {
-  "rhythmic-polish": { motionIntensity: 0.25, transitionIntensity: 0.25, flashIntensity: 0, glitchIntensity: 0, colorTreatment: "matched" },
-  "high-energy": { motionIntensity: 0.7, transitionIntensity: 0.3, flashIntensity: 0.35, glitchIntensity: 0.25, colorTreatment: "matched" },
-  cinematic: { motionIntensity: 0.2, transitionIntensity: 0.5, flashIntensity: 0, glitchIntensity: 0, colorTreatment: "warm" }
+  "rhythmic-polish": { motionIntensityMin: 0.15, motionIntensityMax: 0.35, transitionIntensityMin: 0.15, transitionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "matched" },
+  "high-energy": { motionIntensityMin: 0.5, motionIntensityMax: 0.8, transitionIntensityMin: 0.2, transitionIntensityMax: 0.5, flashIntensityMin: 0.2, flashIntensityMax: 0.45, glitchIntensityMin: 0.15, glitchIntensityMax: 0.35, colorTreatment: "matched" },
+  cinematic: { motionIntensityMin: 0.1, motionIntensityMax: 0.3, transitionIntensityMin: 0.35, transitionIntensityMax: 0.65, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "warm" }
 };
 var optionHelp = {
-  layout: "Three portrait clips play side by side in a 16:9 frame. Full screen plays one clip across the frame.",
+  layout: "Three portrait panes arrange three clips side by side. Full screen shows one clip. The frame follows a common source aspect ratio when possible.",
+  useVerticalVideosOnly: "Only portrait source videos may appear in the three-pane edit. Landscape videos are excluded before planning.",
+  selectionMode: "For landscape footage, choose a random vertical crop, the center crop, or a crop around a detected face.",
+  keepFaceCentered: "Tracks the detected face through the selected clip and updates the crop to follow it. Face slice rejects a range if any sampled part has no detectable face.",
   style: "Applies a starting set of motion, transition, flash, glitch, and color controls. You can change them below.",
   sourceAudio: "Muted uses only the backing song. Mixed adds brief source accents. All keeps source audio throughout. The song level stays constant.",
-  pacing: "Higher values make the edit change clips more often.",
+  pacing: "Sets the slowest and fastest cutting pace. The editor moves within this range as beat spacing changes.",
   beatAdherence: "Higher values move cuts closer to detected song beats and phrase points.",
   sourceDiversity: "Higher values cycle through more different source videos before repeating one.",
-  transitionIntensity: "Controls the length of the stepped dissolves when dissolves are enabled.",
-  motionIntensity: "Controls the zoom used for High Energy accents and Cinematic shots.",
-  flashIntensity: "Controls the brightness of brief flash accents on highlighted cuts.",
-  glitchIntensity: "Controls the strength of brief offset and difference overlays on highlighted cuts.",
+  transitionIntensity: "Minimum and maximum length of stepped dissolves when dissolves are enabled.",
+  motionIntensity: "Minimum and maximum zoom strength for High Energy accents and Cinematic shots.",
+  flashIntensity: "Minimum and maximum brightness of brief flash accents on highlighted cuts.",
+  glitchIntensity: "Minimum and maximum strength of offset and difference accents on highlighted cuts.",
   minClipSeconds: "Shortest allowed time between cuts, in seconds.",
   maxClipSeconds: "Longest preferred clip length, in seconds.",
   songTrimStart: "Optional starting point in the backing song, in seconds. Leave blank to start at the beginning.",
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
-  outputWidth: "Optional output width in pixels. Leave blank to use the resolution chosen from all eligible sources.",
-  outputHeight: "Optional output height in pixels. Leave blank to use the resolution chosen from all eligible sources.",
-  outputFps: "Optional output frame rate. Leave blank for 60 fps only when every source is 60 fps, otherwise 30 fps.",
+  outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
   colorTreatment: "Matched balances source brightness; Warm and Cool add subtle color shifts; Natural leaves color alone.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
   scanToCove: "Imports the finished MP4 into Cove after Resolve renders it.",
   keepPerformers: "Adds performers linked to footage that actually appears in the finished PMV.",
   keepTags: "Adds tags from timed segments that actually appear in the finished PMV. General video tags are not inherited.",
-  addPmvTag: "Adds the PMV tag to the imported video."
+  addPmvTag: "Adds the PMV tag to the imported video.",
+  addAutoPmvTag: "Adds the Auto_PMV tag to the imported video."
 };
 function InfoButton({ label, help }) {
   const [open, setOpen] = useState(false);
+  const wrapper = useRef(null);
   const id = React.useId();
-  return /* @__PURE__ */ React.createElement("span", { className: "pmv-info" }, /* @__PURE__ */ React.createElement(
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event) => {
+      if (!wrapper.current?.contains(event.target)) setOpen(false);
+    };
+    const closeEscape = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeEscape);
+    };
+  }, [open]);
+  return /* @__PURE__ */ React.createElement("span", { className: "pmv-info", ref: wrapper }, /* @__PURE__ */ React.createElement(
     "button",
     {
       type: "button",
@@ -103,35 +121,108 @@ function HelpAction({ label, help, children }) {
 function FolderSetting({ label, help, value, onBrowse, onClear, loading, disabled, optional }) {
   return /* @__PURE__ */ React.createElement(Control, { label, help }, (id) => /* @__PURE__ */ React.createElement("div", { className: "pmv-folder-row" }, /* @__PURE__ */ React.createElement("input", { id, type: "text", readOnly: true, value: value || "", placeholder: "Choose a folder" }), /* @__PURE__ */ React.createElement("button", { type: "button", disabled, onClick: onBrowse }, loading ? "Opening\u2026" : "Browse\u2026"), optional && value && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClear }, "Clear")));
 }
+function RangeControl({ label, help, lower, upper, onChange }) {
+  return /* @__PURE__ */ React.createElement(Control, { label, help }, (id) => /* @__PURE__ */ React.createElement("div", { className: "pmv-range-pair" }, /* @__PURE__ */ React.createElement("label", null, "Min ", /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      id,
+      type: "number",
+      min: "0",
+      max: "1",
+      step: "0.05",
+      value: lower,
+      onChange: (e) => onChange(Math.min(Number(e.target.value), upper), upper)
+    }
+  )), /* @__PURE__ */ React.createElement("label", null, "Max ", /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "number",
+      min: "0",
+      max: "1",
+      step: "0.05",
+      value: upper,
+      onChange: (e) => onChange(lower, Math.max(Number(e.target.value), lower))
+    }
+  ))));
+}
+async function coveFolders(path) {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  const response = await extensionFetch(`/api/metadata/library-folders${query}`);
+  if (!response.ok) throw new Error(`Cove could not list library folders (${response.status}).`);
+  return response.json();
+}
+function CoveFolderNode({ folder, depth, selected, onSelect }) {
+  const [expanded, setExpanded] = useState(false);
+  const [children, setChildren] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (expanded && children === null) coveFolders(folder.path).then(setChildren).catch((e) => setError(e.message));
+  }, [expanded, folder.path]);
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "pmv-tree-row", style: { paddingLeft: 8 + depth * 18 } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      type: "button",
+      className: "pmv-tree-expand",
+      disabled: !folder.hasChildren,
+      onClick: () => setExpanded((value) => !value),
+      "aria-label": `${expanded ? "Collapse" : "Expand"} ${folder.name}`
+    },
+    folder.hasChildren ? expanded ? "\u25BE" : "\u25B8" : "\xB7"
+  ), /* @__PURE__ */ React.createElement("label", { title: folder.path }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "radio",
+      name: "pmv-output-folder",
+      checked: selected === folder.path,
+      onChange: () => onSelect(folder.path)
+    }
+  ), folder.name)), expanded && (error ? /* @__PURE__ */ React.createElement("p", { role: "alert" }, error) : children === null ? /* @__PURE__ */ React.createElement("small", null, "Loading folders\u2026") : children.length ? children.map((child) => /* @__PURE__ */ React.createElement(CoveFolderNode, { key: child.path, folder: child, depth: depth + 1, selected, onSelect })) : /* @__PURE__ */ React.createElement("small", { className: "pmv-tree-empty" }, "No subfolders")));
+}
+function CoveFolderPicker({ current, onChoose, onClose }) {
+  const [roots, setRoots] = useState(null);
+  const [selected, setSelected] = useState(current || "");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api("/scan-roots").then(setRoots).catch((e) => setError(e.message));
+  }, []);
+  return /* @__PURE__ */ React.createElement("div", { className: "pmv-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Choose Cove output folder" }, /* @__PURE__ */ React.createElement("div", { className: "pmv-dialog pmv-folder-dialog" }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("h2", null, "Choose Cove output folder"), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose, "aria-label": "Close" }, "\xD7")), /* @__PURE__ */ React.createElement("p", null, "Choose a configured library path or a subfolder Cove can scan for videos."), /* @__PURE__ */ React.createElement("div", { className: "pmv-tree" }, error ? /* @__PURE__ */ React.createElement("p", { role: "alert" }, error) : roots === null ? /* @__PURE__ */ React.createElement("p", null, "Loading Cove folders\u2026") : roots.length ? roots.map((root) => /* @__PURE__ */ React.createElement(CoveFolderNode, { key: root.path, folder: root, depth: 0, selected, onSelect: setSelected })) : /* @__PURE__ */ React.createElement("p", null, "No video-scanning library paths are configured in Cove.")), /* @__PURE__ */ React.createElement("p", { className: "pmv-selected-path" }, selected || "Choose a folder"), /* @__PURE__ */ React.createElement("footer", null, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: onClose }, "Cancel"), /* @__PURE__ */ React.createElement("button", { type: "button", disabled: !selected, onClick: () => onChoose(selected) }, "Use this folder"))));
+}
 var defaultOptions = {
   layout: "three-pane",
+  useVerticalVideosOnly: false,
+  selectionMode: "center",
+  keepFaceCentered: true,
   style: "rhythmic-polish",
   sourceAudio: "mixed",
-  pacing: 0.5,
-  beatAdherence: 0.8,
+  pacingMin: 0.4,
+  pacingMax: 0.7,
+  beatAdherence: 0.95,
   minClipSeconds: 1,
   maxClipSeconds: 5,
   sourceDiversity: 0.8,
   transitionFamilies: ["cut", "dissolve"],
-  transitionIntensity: 0.25,
-  motionIntensity: 0.25,
-  flashIntensity: 0,
-  glitchIntensity: 0,
+  transitionIntensityMin: 0.15,
+  transitionIntensityMax: 0.35,
+  motionIntensityMin: 0.15,
+  motionIntensityMax: 0.35,
+  flashIntensityMin: 0,
+  flashIntensityMax: 0,
+  glitchIntensityMin: 0,
+  glitchIntensityMax: 0,
   colorTreatment: "matched",
   songTrimStart: null,
   songTrimEnd: null,
-  outputWidth: null,
-  outputHeight: null,
   outputFps: null,
   saveProject: false,
   scanToCove: true,
   keepPerformers: true,
   keepTags: true,
-  addPmvTag: true
+  addPmvTag: true,
+  addAutoPmvTag: true
 };
 function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Layout", help: optionHelp.layout }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.layout, onChange: (e) => set("layout", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "three-pane" }, "Three portrait panes \xB7 16:9 frame"), /* @__PURE__ */ React.createElement("option", { value: "full-screen" }, "Full screen \xB7 16:9"))), /* @__PURE__ */ React.createElement(Control, { label: "Style", help: optionHelp.style }, (id) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("select", { id, value: options.style, onChange: (e) => setOptions((current) => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] })) }, Object.keys(styleHelp).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x.replaceAll("-", " ")))), /* @__PURE__ */ React.createElement("small", null, styleHelp[options.style]))), /* @__PURE__ */ React.createElement(Control, { label: "Source audio", help: optionHelp.sourceAudio }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.sourceAudio, onChange: (e) => set("sourceAudio", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "muted" }, "Muted"), /* @__PURE__ */ React.createElement("option", { value: "mixed" }, "Mixed \xB7 brief accents"), /* @__PURE__ */ React.createElement("option", { value: "all" }, "All source audio")))), /* @__PURE__ */ React.createElement("details", null, /* @__PURE__ */ React.createElement("summary", null, "Advanced edit controls"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["pacing", "Pacing"], ["beatAdherence", "Beat adherence"], ["sourceDiversity", "Source diversity"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => /* @__PURE__ */ React.createElement(Control, { key, label, help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("div", { className: "pmv-range" }, /* @__PURE__ */ React.createElement("input", { id, type: "range", min: "0", max: "1", step: "0.05", value: options[key], onChange: (e) => set(key, Number(e.target.value)) }), /* @__PURE__ */ React.createElement("output", null, Number(options[key]).toFixed(2))))), [["minClipSeconds", "Minimum clip (sec)"], ["maxClipSeconds", "Maximum clip (sec)"], ["songTrimStart", "Song start (sec)"], ["songTrimEnd", "Song end (sec)"], ["outputWidth", "Width override"], ["outputHeight", "Height override"], ["outputFps", "FPS override"]].map(([key, label]) => /* @__PURE__ */ React.createElement(Control, { key, label, help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "number", min: "0", step: "any", value: options[key] ?? "", onChange: (e) => set(key, e.target.value === "" ? null : Number(e.target.value)) }))), /* @__PURE__ */ React.createElement(Control, { label: "Transitions", help: optionHelp.transitionFamilies }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.transitionFamilies?.join(",") || "cut", onChange: (e) => set("transitionFamilies", e.target.value.split(",")) }, /* @__PURE__ */ React.createElement("option", { value: "cut" }, "Cuts"), /* @__PURE__ */ React.createElement("option", { value: "cut,dissolve" }, "Cuts and dissolves"))), /* @__PURE__ */ React.createElement(Control, { label: "Color treatment", help: optionHelp.colorTreatment }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.colorTreatment, onChange: (e) => set("colorTreatment", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "matched" }, "Matched"), /* @__PURE__ */ React.createElement("option", { value: "warm" }, "Warm"), /* @__PURE__ */ React.createElement("option", { value: "cool" }, "Cool"), /* @__PURE__ */ React.createElement("option", { value: "natural" }, "Natural"))), [["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"]].map(([key, label]) => /* @__PURE__ */ React.createElement(Control, { key, label, help: optionHelp[key], className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: !!options[key], onChange: (e) => set(key, e.target.checked) }))))));
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("h4", null, "Layout settings"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Layout", help: optionHelp.layout }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.layout, onChange: (e) => set("layout", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "three-pane" }, "Three portrait panes"), /* @__PURE__ */ React.createElement("option", { value: "full-screen" }, "Full screen"))), options.layout === "three-pane" && /* @__PURE__ */ React.createElement(Control, { label: "Use vertical videos only", help: optionHelp.useVerticalVideosOnly, className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: !!options.useVerticalVideosOnly, onChange: (e) => set("useVerticalVideosOnly", e.target.checked) })), options.layout === "three-pane" && !options.useVerticalVideosOnly && /* @__PURE__ */ React.createElement(Control, { label: "Selection mode", help: optionHelp.selectionMode }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.selectionMode || "center", onChange: (e) => set("selectionMode", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "random" }, "Random slice"), /* @__PURE__ */ React.createElement("option", { value: "center" }, "Center slice"), /* @__PURE__ */ React.createElement("option", { value: "face" }, "Face slice"))), options.layout === "three-pane" && !options.useVerticalVideosOnly && options.selectionMode === "face" && /* @__PURE__ */ React.createElement(Control, { label: "Keep face centered", help: optionHelp.keepFaceCentered, className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: options.keepFaceCentered !== false, onChange: (e) => set("keepFaceCentered", e.target.checked) }))), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Style", help: optionHelp.style }, (id) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("select", { id, value: options.style, onChange: (e) => setOptions((current) => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] })) }, Object.keys(styleHelp).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x.replaceAll("-", " ")))), /* @__PURE__ */ React.createElement("small", null, styleHelp[options.style]))), /* @__PURE__ */ React.createElement(Control, { label: "Source audio", help: optionHelp.sourceAudio }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.sourceAudio, onChange: (e) => set("sourceAudio", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "muted" }, "Muted"), /* @__PURE__ */ React.createElement("option", { value: "mixed" }, "Mixed \xB7 brief accents"), /* @__PURE__ */ React.createElement("option", { value: "all" }, "All source audio")))), /* @__PURE__ */ React.createElement("details", null, /* @__PURE__ */ React.createElement("summary", null, "Advanced edit controls"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["pacing", "Pacing"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => /* @__PURE__ */ React.createElement(RangeControl, { key, label, help: optionHelp[key], lower: options[`${key}Min`] ?? 0, upper: options[`${key}Max`] ?? 0, onChange: (lower, upper) => setOptions((current) => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper })) })), ["beatAdherence", "sourceDiversity"].map((key) => /* @__PURE__ */ React.createElement(Control, { key, label: key === "beatAdherence" ? "Beat adherence" : "Source diversity", help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("div", { className: "pmv-range" }, /* @__PURE__ */ React.createElement("input", { id, type: "range", min: "0", max: "1", step: "0.05", value: options[key], onChange: (e) => set(key, Number(e.target.value)) }), /* @__PURE__ */ React.createElement("output", null, Number(options[key]).toFixed(2))))), ["minClipSeconds", "maxClipSeconds", "songTrimStart", "songTrimEnd"].map((key, i) => /* @__PURE__ */ React.createElement(Control, { key, label: ["Minimum clip (sec)", "Maximum clip (sec)", "Song start (sec)", "Song end (sec)"][i], help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "number", min: "0", step: "any", value: options[key] ?? "", onChange: (e) => set(key, e.target.value === "" ? null : Number(e.target.value)) }))), /* @__PURE__ */ React.createElement(Control, { label: "FPS override", help: optionHelp.outputFps }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.outputFps ?? "", onChange: (e) => set("outputFps", e.target.value ? Number(e.target.value) : null) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Auto"), /* @__PURE__ */ React.createElement("option", { value: "24" }, "24 fps"), /* @__PURE__ */ React.createElement("option", { value: "25" }, "25 fps"), /* @__PURE__ */ React.createElement("option", { value: "30" }, "30 fps"), /* @__PURE__ */ React.createElement("option", { value: "50" }, "50 fps"), /* @__PURE__ */ React.createElement("option", { value: "60" }, "60 fps"))), /* @__PURE__ */ React.createElement(Control, { label: "Transitions", help: optionHelp.transitionFamilies }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.transitionFamilies?.join(",") || "cut", onChange: (e) => set("transitionFamilies", e.target.value.split(",")) }, /* @__PURE__ */ React.createElement("option", { value: "cut" }, "Cuts"), /* @__PURE__ */ React.createElement("option", { value: "cut,dissolve" }, "Cuts and dissolves"))), /* @__PURE__ */ React.createElement(Control, { label: "Color treatment", help: optionHelp.colorTreatment }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.colorTreatment, onChange: (e) => set("colorTreatment", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "matched" }, "Matched"), /* @__PURE__ */ React.createElement("option", { value: "warm" }, "Warm"), /* @__PURE__ */ React.createElement("option", { value: "cool" }, "Cool"), /* @__PURE__ */ React.createElement("option", { value: "natural" }, "Natural"))), [["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"], ["addAutoPmvTag", "Add Auto_PMV tag"]].map(([key, label]) => /* @__PURE__ */ React.createElement(Control, { key, label, help: optionHelp[key], className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: !!options[key], onChange: (e) => set(key, e.target.checked) }))))));
 }
 function useSettings(path = "/settings") {
   const [settings, setSettings] = useState(null);
@@ -150,6 +241,7 @@ function PmvSettingsPanel() {
   const [mappingText, setMappingText] = useState("[]");
   const [mappingValid, setMappingValid] = useState(true);
   const [picking, setPicking] = useState(null);
+  const [showCovePicker, setShowCovePicker] = useState(false);
   useEffect(() => {
     if (settings) setMappingText(JSON.stringify(settings.pathMappings || [], null, 2));
   }, [!!settings]);
@@ -163,10 +255,14 @@ function PmvSettingsPanel() {
     const timer = window.setInterval(refresh, 3e3);
     return () => window.clearInterval(timer);
   }, [!!settings]);
+  useEffect(() => {
+    if (settings) api("/health").then(setHealth).catch((e) => setHealth({ ok: false, error: e.message }));
+  }, [!!settings, settings?.companionMode]);
   if (!settings) return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, error || "Loading PMV settings\u2026");
   const set = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
   const defaults = { ...defaultOptions, ...settings.defaults };
   const automatic = settings.companionMode === "auto";
+  const ready = !!health?.ok && validation?.state === "complete";
   const browseFolder = async (key) => {
     setPicking(key);
     setError("");
@@ -179,7 +275,36 @@ function PmvSettingsPanel() {
       setPicking(null);
     }
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, /* @__PURE__ */ React.createElement("h3", null, "Auto PMV Maker"), /* @__PURE__ */ React.createElement(Control, { label: "Connection", help: "Automatic starts the bundled Windows engine with Cove. External connects to the Windows companion when Cove runs in Docker or on another PC." }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: settings.companionMode || "auto", onChange: (e) => set("companionMode", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "auto" }, "Automatic (native Windows Cove)"), /* @__PURE__ */ React.createElement("option", { value: "external" }, "External (Docker or another PC)"))), automatic ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", null, "Cove starts the bundled engine in your Windows desktop session. No download, launcher, URL, or token is needed."), /* @__PURE__ */ React.createElement("p", { role: "status" }, "Engine: ", local ? local.running ? "running" : local.error || "stopped" : "checking\u2026"), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement(HelpAction, { label: "Restart engine", help: "Restarts the bundled Windows engine after a Resolve scripting change. An active PMV job will be interrupted." }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+  return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, /* @__PURE__ */ React.createElement("h3", null, ready ? "Auto PMV Maker" : "Auto PMV Maker - Setup required"), !ready && /* @__PURE__ */ React.createElement("p", null, "Check Resolve, then run the compatibility check. Job settings appear after both pass."), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement(HelpAction, { label: "Check Resolve", help: "Checks the Resolve connection and required media tools." }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+    try {
+      setHealth(await api("/health"));
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  } }, "Check Resolve")), /* @__PURE__ */ React.createElement(HelpAction, { label: "Run Resolve compatibility check", help: "Renders short fixtures to check the installed Resolve version." }, /* @__PURE__ */ React.createElement("button", { type: "button", disabled: !health?.ok || validation?.state === "queued" || validation?.state === "running", onClick: async () => {
+    try {
+      setValidation(await api("/validation", "POST"));
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  } }, "Run Resolve compatibility check"))), health && /* @__PURE__ */ React.createElement("p", { role: "status" }, "Resolve: ", health.ok ? `${health.product} ${health.version} connected` : health.error), validation && validation.state !== "idle" && /* @__PURE__ */ React.createElement("p", { role: "status" }, "Compatibility check: ", validation.message, validation.error ? ` \u2014 ${validation.error}` : ""), !ready && !automatic && /* @__PURE__ */ React.createElement("details", null, /* @__PURE__ */ React.createElement("summary", null, "External companion connection (Docker)"), /* @__PURE__ */ React.createElement("p", null, "Download and start the bundled Windows companion, then save its URL and token before checking Resolve."), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+    try {
+      await downloadCompanion();
+      setMessage("Companion ZIP downloaded.");
+    } catch (e) {
+      setError(e.message);
+    }
+  } }, "Download Windows companion"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Companion URL", help: "The address shown by the Windows companion." }, (id) => /* @__PURE__ */ React.createElement("input", { id, value: settings.companionUrl || "", onChange: (e) => set("companionUrl", e.target.value) })), /* @__PURE__ */ React.createElement(Control, { label: "Companion token", help: "The private token shown by the Windows companion." }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "password", value: settings.companionToken || "", onChange: (e) => set("companionToken", e.target.value) })), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+    try {
+      setSettings(await api("/settings", "PUT", settings));
+      setHealth(await api("/health"));
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  } }, "Save connection"))), ready && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Control, { label: "Connection", help: "Automatic starts the bundled Windows engine with Cove. External connects to the Windows companion when Cove runs in Docker or on another PC." }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: settings.companionMode || "auto", onChange: (e) => set("companionMode", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "auto" }, "Automatic (native Windows Cove)"), /* @__PURE__ */ React.createElement("option", { value: "external" }, "External (Docker or another PC)"))), automatic ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", null, "Cove starts the bundled engine in your Windows desktop session. No download, launcher, URL, or token is needed."), /* @__PURE__ */ React.createElement("p", { role: "status" }, "Engine: ", local ? local.running ? "running" : local.error || "stopped" : "checking\u2026"), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement(HelpAction, { label: "Restart engine", help: "Restarts the bundled Windows engine after a Resolve scripting change. An active PMV job will be interrupted." }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
     try {
       setLocal(await api("/local-companion/start", "POST"));
       setHealth(null);
@@ -206,20 +331,7 @@ function PmvSettingsPanel() {
       setMappingValid(false);
       setError("Path mappings must be a JSON array.");
     }
-  } }))), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(FolderSetting, { label: "Output folder", help: "Where finished MP4 files are saved. Cove must also be able to read this folder to import the result.", value: settings.outputFolder, onBrowse: () => browseFolder("outputFolder"), loading: picking === "outputFolder", disabled: !!picking }), /* @__PURE__ */ React.createElement(FolderSetting, { label: "Project folder (optional)", help: "Where exported Resolve .drp files go when Save project is enabled. Leave blank to save beside the MP4.", value: settings.projectFolder, onBrowse: () => browseFolder("projectFolder"), onClear: () => set("projectFolder", ""), loading: picking === "projectFolder", disabled: !!picking, optional: true }), /* @__PURE__ */ React.createElement(FolderSetting, { label: "Music folder", help: "Root folder for browsing backing songs in the Create PMV popup. Subfolders can be browsed there.", value: settings.musicFolder, onBrowse: () => browseFolder("musicFolder"), onClear: () => set("musicFolder", ""), loading: picking === "musicFolder", disabled: !!picking, optional: true })), /* @__PURE__ */ React.createElement("h4", null, "Job defaults"), /* @__PURE__ */ React.createElement(OptionForm, { options: defaults, setOptions: (value) => set("defaults", typeof value === "function" ? value(defaults) : value) }), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement(HelpAction, { label: "Check Resolve", help: "Checks whether the companion can connect to an installed Resolve Studio and required media tools." }, /* @__PURE__ */ React.createElement("button", { onClick: async () => {
-    try {
-      setHealth(await api("/health"));
-    } catch (e) {
-      setError(e.message);
-    }
-  } }, "Check Resolve")), /* @__PURE__ */ React.createElement(HelpAction, { label: "Run Resolve compatibility check", help: "Renders 18 short test combinations in Resolve and validates their output for this Resolve version." }, /* @__PURE__ */ React.createElement("button", { disabled: validation?.state === "queued" || validation?.state === "running", onClick: async () => {
-    try {
-      setValidation(await api("/validation", "POST"));
-      setError("");
-    } catch (e) {
-      setError(e.message);
-    }
-  } }, "Run Resolve compatibility check")), /* @__PURE__ */ React.createElement(HelpAction, { label: "Save settings", help: "Saves folders, companion connection, path mappings, and job defaults in Cove." }, /* @__PURE__ */ React.createElement("button", { disabled: !automatic && !mappingValid, onClick: async () => {
+  } }))), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(FolderSetting, { label: "Output folder", help: "Where finished MP4 files are saved. Choose a Cove video library folder so Cove can scan the result.", value: settings.outputFolder, onBrowse: () => setShowCovePicker(true) }), /* @__PURE__ */ React.createElement(FolderSetting, { label: "Music folder", help: "Root folder for browsing backing songs in the Create PMV popup. Subfolders can be browsed there.", value: settings.musicFolder, onBrowse: () => browseFolder("musicFolder"), onClear: () => set("musicFolder", ""), loading: picking === "musicFolder", disabled: !!picking, optional: true })), /* @__PURE__ */ React.createElement("details", null, /* @__PURE__ */ React.createElement("summary", null, "Advanced settings"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(FolderSetting, { label: "Project folder (optional)", help: "Where exported Resolve .drp files go when Save project is enabled. Leave blank to save beside the MP4.", value: settings.projectFolder, onBrowse: () => browseFolder("projectFolder"), onClear: () => set("projectFolder", ""), loading: picking === "projectFolder", disabled: !!picking, optional: true }))), /* @__PURE__ */ React.createElement("h4", null, "Job defaults"), /* @__PURE__ */ React.createElement(OptionForm, { options: defaults, setOptions: (value) => set("defaults", typeof value === "function" ? value(defaults) : value) }), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { disabled: !automatic && !mappingValid, onClick: async () => {
     try {
       setSettings(await api("/settings", "PUT", settings));
       if (automatic) setLocal(await api("/local-companion"));
@@ -228,7 +340,10 @@ function PmvSettingsPanel() {
     } catch (e) {
       setError(e.message);
     }
-  } }, "Save settings"))), health && /* @__PURE__ */ React.createElement("p", { role: "status" }, health.ok ? `${health.product} ${health.version} ready` : health.error), validation && validation.state !== "idle" && /* @__PURE__ */ React.createElement("p", { role: "status" }, "Compatibility check: ", validation.message, validation.error ? ` \u2014 ${validation.error}` : ""), error && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error), message && /* @__PURE__ */ React.createElement("p", { role: "status" }, message));
+  } }, "Save settings")), showCovePicker && /* @__PURE__ */ React.createElement(CoveFolderPicker, { current: settings.outputFolder, onChoose: (path) => {
+    set("outputFolder", path);
+    setShowCovePicker(false);
+  }, onClose: () => setShowCovePicker(false) })), error && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error), message && /* @__PURE__ */ React.createElement("p", { role: "status" }, message));
 }
 function PmvDialog({ context, close }) {
   const [settings, , settingsError] = useSettings("/defaults");
@@ -265,8 +380,17 @@ function PmvDialog({ context, close }) {
   };
   const request = { scope, audio, options };
   useEffect(() => {
-    api("/preview", "POST", request).then(setPreview).catch((e) => setError(e.message));
-  }, [JSON.stringify(scope)]);
+    let active = true;
+    const timer = window.setTimeout(() => api("/preview", "POST", request).then((result) => {
+      if (active) setPreview(result);
+    }).catch((e) => {
+      if (active) setError(e.message);
+    }), 150);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [JSON.stringify(scope), JSON.stringify(options)]);
   const create = async () => {
     setBusy(true);
     setError("");

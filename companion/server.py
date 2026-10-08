@@ -17,7 +17,7 @@ from tempfile import TemporaryDirectory
 from urllib.parse import urlparse
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, mix_audio, output_stem, prepare_audio, reserve_output
-from resolve_adapter import connect, render
+from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render
 
 JOBS = {}
 LOCK = threading.Lock()
@@ -72,12 +72,18 @@ def health():
     if missing:
         return {"ok": False, "error": "Missing tools: " + ", ".join(missing)}
     try:
-        resolve = connect()
+        resolve = connect(require_validation=False)
         product = resolve.GetProductName()
         version = resolve.GetVersionString()
         if "Studio" not in product:
             return {"ok": False, "error": "DaVinci Resolve Studio is required", "product": product, "version": version}
-        return {"ok": True, "product": product, "version": version, "ytDlp": shutil.which("yt-dlp") is not None}
+        try:
+            marker = json.loads(VALIDATION.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            marker = {}
+        validated = marker.get("product") == product and marker.get("version") == version and marker.get("schema") == VALIDATION_SCHEMA
+        return {"ok": True, "validated": validated, "product": product, "version": version,
+                "ytDlp": shutil.which("yt-dlp") is not None}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -143,6 +149,8 @@ def do_job(job_id, payload):
             status = health()
             if not status["ok"]:
                 raise RuntimeError(status["error"])
+            if not status.get("validated"):
+                raise RuntimeError("Run the Resolve compatibility check for this companion and Resolve version first")
             sources = preflight(payload)
             options = payload.get("options") or {}
             options["layout"] = options.get("layout", "three-pane")
@@ -210,7 +218,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             return self.reply(200, health())
         if path == "/validation":
-            return self.reply(200, dict(VALIDATION_STATE))
+            state = dict(VALIDATION_STATE)
+            if state["state"] == "idle":
+                current = health()
+                if current.get("validated"):
+                    state.update(state="complete", progress=100, message="Resolve compatibility check passed")
+            return self.reply(200, state)
         if path.startswith("/jobs/"):
             state = JOBS.get(path.split("/")[-1])
             if state is None:

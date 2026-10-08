@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
 from engine import Clip, choose_format, edit_plan, output_stem, reserve_output
@@ -21,7 +22,33 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(choose_format(portrait, "three-pane", {}), (1280, 720, 60))
         sources.append(self.source(3, height=2160, fps=30))
         self.assertEqual(choose_format(sources, "full-screen", {}), (1920, 1080, 30))
-        self.assertEqual(choose_format(sources, "full-screen", {"outputWidth": 1280, "outputHeight": 720, "outputFps": 60}), (1280, 720, 60))
+        self.assertEqual(choose_format(sources, "full-screen", {"outputFps": 60}), (1920, 1080, 60))
+        four_three = [{**sources[0], "width": 640, "height": 480}, {**sources[1], "width": 640, "height": 480}]
+        self.assertEqual(choose_format(four_three, "full-screen", {}), (1440, 1080, 60))
+
+    def test_vertical_only_filters_sources_and_random_slice_varies(self):
+        landscape = self.source(1)
+        portrait = {**self.source(2), "width": 720, "height": 1280}
+        for source in (landscape, portrait):
+            source["segments"] = [{"id": source["id"], "start": 0, "end": 30}]
+            source["tagOnly"] = True
+        beats = [x * 0.5 for x in range(21)]
+        vertical = edit_plan([landscape, portrait], beats, {"useVerticalVideosOnly": True}, "three-pane")
+        self.assertEqual({clip.video_id for clip in vertical}, {2})
+        random = edit_plan([landscape], beats, {"selectionMode": "random", "randomSeed": 7}, "three-pane")
+        self.assertGreater(len({round(clip.crop_center, 3) for clip in random}), 1)
+
+    def test_face_slice_rejects_ranges_without_faces(self):
+        source = self.source(1)
+        source["segments"] = [{"id": 1, "start": 0, "end": 10}]
+        source["tagOnly"] = True
+        with patch("face_analysis.FaceAnalyzer") as analyzer:
+            analyzer.return_value.analyze.return_value = None
+            with self.assertRaisesRegex(ValueError, "No detectable face"):
+                edit_plan([source], [0, 2], {"selectionMode": "face"}, "three-pane")
+            analyzer.return_value.analyze.return_value = ((0.1, 0.35), (1.5, 0.65))
+            clips = edit_plan([source], [0, 2], {"selectionMode": "face"}, "three-pane")
+            self.assertEqual(clips[0].face_track, ((0.1, 0.35), (1.5, 0.65)))
 
     def test_edit_plan_covers_sources_and_uses_three_independent_panes(self):
         sources = [self.source(i) for i in range(1, 7)]

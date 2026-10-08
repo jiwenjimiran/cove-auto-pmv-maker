@@ -20,6 +20,8 @@ Copy-Item (Join-Path $source 'bin/Release/net10.0/Cove.PmvMaker.dll') $artifact 
 Copy-Item (Join-Path $source 'dist/*') (Join-Path $artifact 'dist') -Force
 Copy-Item (Join-Path $repo 'companion/*.py') $companion -Force
 Copy-Item (Join-Path $repo 'companion/requirements.txt') $companion -Force
+Copy-Item (Join-Path $repo 'companion/face_detection_yunet_2023mar.onnx') $companion -Force
+Copy-Item (Join-Path $repo 'companion/face_detection_yunet_LICENSE.txt') $companion -Force
 Copy-Item (Join-Path $repo 'companion/Start-Companion.ps1') $companion -Force
 Copy-Item (Join-Path $repo 'companion/Start Companion.cmd') $companion -Force
 Copy-Item (Join-Path $repo 'companion/Start Companion Docker.cmd') $companion -Force
@@ -27,7 +29,7 @@ Copy-Item (Join-Path $repo 'companion/Validate Resolve.cmd') $companion -Force
 Copy-Item (Join-Path $repo 'companion/Pick Folder.ps1') $companion -Force
 Copy-Item (Join-Path $repo 'README.md') $companion -Force
 Copy-Item (Join-Path $repo 'patches/cove-ui.patch') (Join-Path $companion 'patches') -Force
-$companionFiles = @('engine.py', 'resolve_adapter.py', 'server.py', 'smoke.py', 'requirements.txt',
+$companionFiles = @('engine.py', 'face_analysis.py', 'face_detection_yunet_2023mar.onnx', 'face_detection_yunet_LICENSE.txt', 'resolve_adapter.py', 'server.py', 'smoke.py', 'requirements.txt',
     'Start-Companion.ps1', 'Start Companion.cmd', 'Start Companion Docker.cmd', 'Validate Resolve.cmd', 'Pick Folder.ps1', 'README.md') |
     ForEach-Object { Join-Path $companion $_ }
 $companionFiles += Join-Path $companion 'patches'

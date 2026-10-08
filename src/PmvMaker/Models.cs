@@ -26,29 +26,36 @@ public sealed class PmvSettings
 public sealed class PmvOptions
 {
     public string Layout { get; set; } = "three-pane";
+    public bool UseVerticalVideosOnly { get; set; }
+    public string SelectionMode { get; set; } = "center";
+    public bool KeepFaceCentered { get; set; } = true;
     public string Style { get; set; } = "rhythmic-polish";
     public string SourceAudio { get; set; } = "mixed";
-    public double Pacing { get; set; } = 0.5;
-    public double BeatAdherence { get; set; } = 0.8;
+    public double PacingMin { get; set; } = 0.4;
+    public double PacingMax { get; set; } = 0.7;
+    public double BeatAdherence { get; set; } = 0.95;
     public double MinClipSeconds { get; set; } = 1.0;
     public double MaxClipSeconds { get; set; } = 5.0;
     public double SourceDiversity { get; set; } = 0.8;
     public string[] TransitionFamilies { get; set; } = ["cut", "dissolve"];
-    public double TransitionIntensity { get; set; } = 0.25;
-    public double MotionIntensity { get; set; } = 0.25;
-    public double FlashIntensity { get; set; } = 0;
-    public double GlitchIntensity { get; set; } = 0;
+    public double TransitionIntensityMin { get; set; } = 0.15;
+    public double TransitionIntensityMax { get; set; } = 0.35;
+    public double MotionIntensityMin { get; set; } = 0.15;
+    public double MotionIntensityMax { get; set; } = 0.35;
+    public double FlashIntensityMin { get; set; }
+    public double FlashIntensityMax { get; set; }
+    public double GlitchIntensityMin { get; set; }
+    public double GlitchIntensityMax { get; set; }
     public string ColorTreatment { get; set; } = "matched";
     public double? SongTrimStart { get; set; }
     public double? SongTrimEnd { get; set; }
-    public int? OutputWidth { get; set; }
-    public int? OutputHeight { get; set; }
     public int? OutputFps { get; set; }
     public bool SaveProject { get; set; }
     public bool ScanToCove { get; set; } = true;
     public bool KeepPerformers { get; set; } = true;
     public bool KeepTags { get; set; } = true;
     public bool AddPmvTag { get; set; } = true;
+    public bool AddAutoPmvTag { get; set; } = true;
 }
 
 public sealed class SourceScope

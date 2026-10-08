@@ -26,7 +26,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.7";
+    public string Version => "0.1.8";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -72,6 +72,14 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     {
         MapGetResult(endpoints, "/api/ext/pmv/settings", async (HttpContext ctx) => Results.Json(PublicSettings(await SettingsAsync(ctx.RequestAborted)), Json))
             .RequireCovePermission("system.settings.write");
+        MapGetResult(endpoints, "/api/ext/pmv/scan-roots", (HttpContext ctx) =>
+        {
+            var roots = ctx.RequestServices.GetService<CoveConfiguration>()?.CovePaths
+                .Where(path => !path.ExcludeVideo && !string.IsNullOrWhiteSpace(path.Path))
+                .Select(path => new { name = path.Path, path = path.Path, hasChildren = true })
+                .ToArray() ?? [];
+            return Task.FromResult<IResult>(Results.Json(roots, Json));
+        }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/local-companion", async (HttpContext ctx) =>
         {
             var settings = await SettingsAsync(ctx.RequestAborted);
@@ -100,6 +108,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             if (settings.CompanionMode == "external" && (string.IsNullOrWhiteSpace(settings.CompanionUrl)
                 || !Uri.TryCreate(settings.CompanionUrl, UriKind.Absolute, out var uri) || uri.Scheme != "http"))
                 return Results.BadRequest(new { message = "Enter a local HTTP companion URL." });
+            if (!string.IsNullOrWhiteSpace(settings.OutputFolder) && !OutputInScanRoot(settings.OutputFolder, ctx.RequestServices))
+                return Results.BadRequest(new { message = "Choose an output folder inside a Cove library path that scans videos." });
             if (_store is null) return Results.Problem("Extension storage unavailable.");
             if (settings.CompanionMode == "external" && string.IsNullOrWhiteSpace(settings.CompanionToken))
                 settings.CompanionToken = (await SettingsAsync(ctx.RequestAborted)).CompanionToken;
@@ -122,7 +132,6 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 var request = await ctx.Request.ReadFromJsonAsync<FolderPickerRequest>(Json, ctx.RequestAborted) ?? new();
                 var title = request.Kind switch
                 {
-                    "outputFolder" => "Choose PMV output folder",
                     "musicFolder" => "Choose music folder",
                     "projectFolder" => "Choose Resolve project folder",
                     _ => null
@@ -216,8 +225,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             ScopeResult result;
             try { result = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted); }
             catch (UnauthorizedAccessException) { return Results.Forbid(); }
-            var stem = result.Videos.Count == 0 ? "PMVMAKER_Multi" : PmvNaming.Stem(result, result.Videos, result.Videos.SelectMany(v => v.Segments).Select(s => s.Id).ToArray());
             var settings = await SettingsAsync(ctx.RequestAborted);
+            result = FilterSourcesForLayout(result, request.Options ?? settings.Defaults);
+            var stem = result.Videos.Count == 0 ? "PMVMAKER_Multi" : PmvNaming.Stem(result, result.Videos, result.Videos.SelectMany(v => v.Segments).Select(s => s.Id).ToArray());
             return Results.Json(new { eligibleCount = result.Videos.Count, exclusions = result.Exclusions,
                 proposedFilename = PmvNaming.Proposed(settings.OutputFolder, stem, settings.ProjectFolder,
                     request.Options?.SaveProject ?? settings.Defaults.SaveProject) }, Json);
@@ -227,6 +237,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             var request = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
             if (string.IsNullOrWhiteSpace((await SettingsAsync(ctx.RequestAborted)).OutputFolder))
                 return Results.BadRequest(new { message = "Set an output folder first." });
+            if (!OutputInScanRoot((await SettingsAsync(ctx.RequestAborted)).OutputFolder, ctx.RequestServices))
+                return Results.BadRequest(new { message = "Choose an output folder inside a Cove library path that scans videos." });
             PmvSettings settings;
             try { settings = await EffectiveSettingsAsync(ctx.RequestAborted); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
@@ -236,9 +248,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             ScopeResult resolved;
             try { resolved = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted); }
             catch (UnauthorizedAccessException) { return Results.Forbid(); }
+            resolved = FilterSourcesForLayout(resolved, request.Options ?? settings.Defaults);
             if (resolved.Videos.Count == 0) return Results.BadRequest(new { message = "No eligible sources.", exclusions = resolved.Exclusions });
             var health = await CompanionGetAsync(settings, "health", ctx.RequestAborted);
             if (!health.GetProperty("ok").GetBoolean()) return Results.BadRequest(new { message = "Resolve Studio companion is unhealthy.", health });
+            if (!health.TryGetProperty("validated", out var validated) || !validated.GetBoolean())
+                return Results.BadRequest(new { message = "Run the Resolve compatibility check before creating a PMV." });
             var outputFolder = Path.GetFullPath(settings.OutputFolder);
             if (request.Options?.ScanToCove ?? settings.Defaults.ScanToCove)
             {
@@ -284,9 +299,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     {
         await using var scope = _scopes!.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-        var resolved = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct);
-        if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
         var options = request.Options ?? settings.Defaults;
+        var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct), options);
+        if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
         var payload = new
         {
             sources = resolved.Videos.Select(v => new { v.Id, path = ToHost(v.Path, settings), v.Duration, v.Width, v.Height, v.Fps,
@@ -377,16 +392,38 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             foreach (var id in used.SelectMany(v => v.Segments).Where(s => job.UsedSegmentIds?.Contains(s.Id) == true)
                 .Where(s => s.TagId.HasValue).Select(s => s.TagId!.Value).Distinct())
                 tagIds.Add(id);
-        if (options.AddPmvTag)
+        foreach (var name in new[] { options.AddPmvTag ? "PMV" : null, options.AddAutoPmvTag ? "Auto_PMV" : null }.OfType<string>())
         {
-            var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == "PMV", ct);
-            if (tag is null) { tag = new Tag { Name = "PMV" }; db.Tags.Add(tag); await db.SaveChangesAsync(ct); }
+            var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == name, ct);
+            if (tag is null) { tag = new Tag { Name = name }; db.Tags.Add(tag); await db.SaveChangesAsync(ct); }
             tagIds.Add(tag.Id);
         }
         var existing = await db.Set<VideoTag>().Where(x => x.VideoId == videoId).Select(x => x.TagId).ToArrayAsync(ct);
         tagIds.ExceptWith(existing);
         foreach (var id in tagIds) db.Set<VideoTag>().Add(new VideoTag { VideoId = videoId, TagId = id });
         await db.SaveChangesAsync(ct);
+    }
+
+    private static ScopeResult FilterSourcesForLayout(ScopeResult source, PmvOptions options)
+    {
+        if (options.Layout != "three-pane" || !options.UseVerticalVideosOnly) return source;
+        var vertical = source.Videos.Where(video => video.Height > video.Width).ToArray();
+        var excluded = source.Exclusions.Concat(source.Videos.Where(video => video.Height <= video.Width)
+            .Select(video => $"Video {video.Id}: not vertical")).ToArray();
+        return new ScopeResult(vertical, excluded, source.LaunchName, source.LaunchKind);
+    }
+
+    private static bool OutputInScanRoot(string path, IServiceProvider services)
+    {
+        var config = services.GetService<CoveConfiguration>();
+        if (config is null) return false;
+        try
+        {
+            var full = Path.GetFullPath(path);
+            return config.CovePaths.Where(root => !root.ExcludeVideo && !string.IsNullOrWhiteSpace(root.Path))
+                .Any(root => IsAtOrBelow(full, Path.GetFullPath(root.Path)));
+        }
+        catch { return false; }
     }
 
     private async Task<PmvSettings> SettingsAsync(CancellationToken ct)

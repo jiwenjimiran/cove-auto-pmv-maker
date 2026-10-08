@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, mix_audio, probe, run
-from resolve_adapter import VALIDATION, connect, render
+from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render
 
 
 def main(automated=False, progress=None, limit=None):
@@ -90,7 +90,7 @@ def main(automated=False, progress=None, limit=None):
         print(json.dumps({"studio": resolve.GetProductName(), "version": resolve.GetVersionString(), "renders": checks}, indent=2))
         print("Inspect beat cuts, transition smoothness, flash/glitch accents, crop edges, and audio peaks before cleanup.")
         if automated or input("Type VALIDATED to enable this Resolve version: ").strip() == "VALIDATED":
-            VALIDATION.write_text(json.dumps({"product": resolve.GetProductName(), "version": resolve.GetVersionString(),
+            VALIDATION.write_text(json.dumps({"product": resolve.GetProductName(), "version": resolve.GetVersionString(), "schema": VALIDATION_SCHEMA,
                                               "renders": len(checks)}, indent=2), encoding="utf-8")
 
 
