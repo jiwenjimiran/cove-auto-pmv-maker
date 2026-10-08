@@ -1,0 +1,14 @@
+{
+  "id": "io.github.jiwenjimiran.auto-pmv-maker",
+  "name": "Auto PMV Maker",
+  "version": "0.1.0",
+  "description": "Song-led PMVs rendered by DaVinci Resolve Studio on a Windows companion.",
+  "author": "jiwenji",
+  "kind": "extension",
+  "categories": ["video", "automation", "tools"],
+  "minCoveVersion": "1.5.1",
+  "entryDll": "Cove.PmvMaker.dll",
+  "jsBundle": "dist/bundle.js",
+  "cssBundle": "dist/bundle.css",
+  "sharedAssemblies": ["Cove.Plugins", "Cove.Sdk", "Cove.Core", "Cove.Data"]
+}

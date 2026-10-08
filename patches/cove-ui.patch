@@ -1,0 +1,170 @@
+diff --git a/ui/src/components/ExtensionEntityActions.tsx b/ui/src/components/ExtensionEntityActions.tsx
+index 29f776ca..400c8f55 100644
+--- a/ui/src/components/ExtensionEntityActions.tsx
++++ b/ui/src/components/ExtensionEntityActions.tsx
+@@ -12,6 +12,7 @@ export interface ExtensionEntityActionsProps {
+   pageType?: string;
+   renderMode?: "toolbar" | "menu";
+   onInvoked?: () => void;
++  extraPayload?: Record<string, unknown>;
+ }
+ 
+ interface QueuedActionResponse {
+@@ -29,12 +30,18 @@ function normalizeEntityType(entityType: string): string {
+       return "video";
+     case "images":
+       return "image";
++    case "performers":
++      return "performer";
++    case "studios":
++      return "studio";
++    case "tags":
++      return "tag";
+     default:
+       return normalized;
+   }
+ }
+ 
+-function buildActionPayload(action: ExtensionAction, entityType: string, pageType: string, entityId: number) {
++function buildActionPayload(action: ExtensionAction, entityType: string, pageType: string, entityId: number, extraPayload?: Record<string, unknown>) {
+   return {
+     actionId: action.id,
+     extensionId: action.extensionId,
+@@ -43,6 +50,7 @@ function buildActionPayload(action: ExtensionAction, entityType: string, pageTyp
+     entityIds: [entityId],
+     selectedIds: [entityId],
+     selectedCount: 1,
++    ...extraPayload,
+   };
+ }
+ 
+@@ -101,6 +109,7 @@ export function ExtensionEntityActions({
+   pageType,
+   renderMode = "toolbar",
+   onInvoked,
++  extraPayload,
+ }: ExtensionEntityActionsProps) {
+   const normalizedEntityType = normalizeEntityType(entityType);
+   const normalizedPageType = normalizeEntityType(pageType ?? entityType);
+@@ -118,7 +127,7 @@ export function ExtensionEntityActions({
+   );
+ 
+   const actions = useMemo(() => {
+-    if (normalizedEntityType !== "video" && normalizedEntityType !== "image") {
++    if (!["video", "image", "performer", "studio", "tag"].includes(normalizedEntityType)) {
+       return [];
+     }
+ 
+@@ -128,7 +137,7 @@ export function ExtensionEntityActions({
+   const invokeActionMut = useMutation<unknown, Error, ExtensionAction>({
+     meta: { suppressGlobalError: true },
+     mutationFn: async (action) => {
+-      const payload = buildActionPayload(action, normalizedEntityType, normalizedPageType, entityId);
++      const payload = buildActionPayload(action, normalizedEntityType, normalizedPageType, entityId, extraPayload);
+ 
+       if (action.handlerName) {
+         const handler = resolveActionHandler(action.extensionId, action.handlerName);
+diff --git a/ui/src/components/ExtensionSelectionActions.tsx b/ui/src/components/ExtensionSelectionActions.tsx
+index 89a1157a..2ea952f3 100644
+--- a/ui/src/components/ExtensionSelectionActions.tsx
++++ b/ui/src/components/ExtensionSelectionActions.tsx
+@@ -26,6 +26,12 @@ function normalizeEntityType(entityType: string): string {
+       return "video";
+     case "images":
+       return "image";
++    case "performers":
++      return "performer";
++    case "studios":
++      return "studio";
++    case "tags":
++      return "tag";
+     default:
+       return normalized;
+   }
+diff --git a/ui/src/components/MediaDetailListToolbar.tsx b/ui/src/components/MediaDetailListToolbar.tsx
+index 9e546a53..62163215 100644
+--- a/ui/src/components/MediaDetailListToolbar.tsx
++++ b/ui/src/components/MediaDetailListToolbar.tsx
+@@ -3,6 +3,7 @@ import { audios, galleries, images, texts, videos } from "../api/client";
+ import type { FindFilter } from "../api/types";
+ import { DetailListToolbar, type DetailListToolbarProps } from "./DetailListToolbar";
+ import { MediaAggregateMetadata } from "./MediaAggregateMetadata";
++import { ExtensionEntityActions } from "./ExtensionEntityActions";
+ 
+ type MediaType = "videos" | "images" | "galleries" | "audios" | "texts";
+ 
+@@ -10,6 +11,8 @@ interface Props extends DetailListToolbarProps {
+   mediaType: MediaType;
+   aggregateObjectFilter: Record<string, unknown>;
+   selectedIds: ReadonlySet<number>;
++  extensionParent?: { entityType: "performer" | "studio" | "tag"; entityId: number; includeChildStudios?: boolean };
++  extensionVideoFilter?: Record<string, unknown>;
+ }
+ 
+ function aggregate(
+@@ -31,7 +34,7 @@ function aggregate(
+ }
+ 
+ /** Uses the same aggregate endpoints as top-level lists, with the parent relation included. */
+-export function MediaDetailListToolbar({ mediaType, aggregateObjectFilter, selectedIds, ...props }: Props) {
++export function MediaDetailListToolbar({ mediaType, aggregateObjectFilter, selectedIds, extensionParent, extensionVideoFilter, ...props }: Props) {
+   // The media type already names this list's entity, so relevance works without a filterMode.
+   const listEntityType = props.listEntityType ?? mediaType;
+   const aggregateFilter = { q: props.filter.q, page: 1, perPage: 0 };
+@@ -65,11 +68,19 @@ export function MediaDetailListToolbar({ mediaType, aggregateObjectFilter, selec
+     );
+ 
+   return (
++    <>
++    {mediaType === "videos" && extensionParent && <ExtensionEntityActions
++      entityType={extensionParent.entityType}
++      entityId={extensionParent.entityId}
++      extraPayload={{ videoFilter: extensionVideoFilter ?? aggregateObjectFilter, findQuery: props.filter.q,
++        includeChildStudios: extensionParent.includeChildStudios }}
++    />}
+     <DetailListToolbar
+       {...props}
+       listEntityType={listEntityType}
+       metadataByline={metadata(filtered)}
+       selectionMetadata={ids.length > 0 ? metadata(selected) : undefined}
+     />
++    </>
+   );
+ }
+diff --git a/ui/src/pages/PerformerDetailPage.tsx b/ui/src/pages/PerformerDetailPage.tsx
+index c29fdc7e..c42d4c1f 100644
+--- a/ui/src/pages/PerformerDetailPage.tsx
++++ b/ui/src/pages/PerformerDetailPage.tsx
+@@ -1360,6 +1360,7 @@ function PerformerVideosPanel({ performerId, onNavigate }: { performerId: number
+   const toolbar = (
+     <MediaDetailListToolbar
+       mediaType="videos"
++      extensionParent={{ entityType: "performer", entityId: performerId }}
+       onNavigate={onNavigate}
+       vrListSource={{
+         label: pageLabel(),
+diff --git a/ui/src/pages/StudioDetailPage.tsx b/ui/src/pages/StudioDetailPage.tsx
+index 06fad22b..380d2e19 100644
+--- a/ui/src/pages/StudioDetailPage.tsx
++++ b/ui/src/pages/StudioDetailPage.tsx
+@@ -924,6 +924,7 @@ function StudioVideosPanel({
+   const toolbar = (
+     <MediaDetailListToolbar
+       mediaType="videos"
++      extensionParent={{ entityType: "studio", entityId: studioId, includeChildStudios: includeSubStudios }}
+       onNavigate={onNavigate}
+       vrListSource={{
+         label: pageLabel(),
+diff --git a/ui/src/pages/TagDetailPage.tsx b/ui/src/pages/TagDetailPage.tsx
+index bb6b6511..739516a2 100644
+--- a/ui/src/pages/TagDetailPage.tsx
++++ b/ui/src/pages/TagDetailPage.tsx
+@@ -720,6 +720,8 @@ function TagVideosPanel({
+   const toolbar = (
+     <MediaDetailListToolbar
+       mediaType="videos"
++      extensionParent={{ entityType: "tag", entityId: tagId }}
++      extensionVideoFilter={objectFilter}
+       onNavigate={onNavigate}
+       vrListSource={{
+         label: pageLabel(),

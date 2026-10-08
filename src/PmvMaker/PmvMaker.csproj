@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Cove.PmvMaker</AssemblyName>
+    <RootNamespace>Cove.PmvMaker</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../../cove/src/Cove.Plugins/Cove.Plugins.csproj" Private="false" ExcludeAssets="runtime" />
+    <ProjectReference Include="../../../cove/src/Cove.Sdk/Cove.Sdk.csproj" Private="false" ExcludeAssets="runtime" />
+    <ProjectReference Include="../../../cove/src/Cove.Core/Cove.Core.csproj" Private="false" ExcludeAssets="runtime" />
+    <ProjectReference Include="../../../cove/src/Cove.Data/Cove.Data.csproj" Private="false" ExcludeAssets="runtime" />
+    <None Include="extension.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="dist/**/*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

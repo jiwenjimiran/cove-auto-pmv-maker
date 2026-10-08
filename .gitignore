@@ -1,0 +1,9 @@
+bin/
+obj/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+*.reserve
+artifacts/
+validated-version.json
