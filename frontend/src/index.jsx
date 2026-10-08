@@ -49,6 +49,62 @@ const stylePresets = {
   "high-energy": { motionIntensity: 0.7, transitionIntensity: 0.3, flashIntensity: 0.35, glitchIntensity: 0.25, colorTreatment: "matched" },
   cinematic: { motionIntensity: 0.2, transitionIntensity: 0.5, flashIntensity: 0, glitchIntensity: 0, colorTreatment: "warm" }
 };
+const optionHelp = {
+  layout: "Three portrait clips play side by side in a 16:9 frame. Full screen plays one clip across the frame.",
+  style: "Applies a starting set of motion, transition, flash, glitch, and color controls. You can change them below.",
+  sourceAudio: "Muted uses only the backing song. Mixed adds brief source accents. All keeps source audio throughout. The song level stays constant.",
+  pacing: "Higher values make the edit change clips more often.",
+  beatAdherence: "Higher values move cuts closer to detected song beats and phrase points.",
+  sourceDiversity: "Higher values cycle through more different source videos before repeating one.",
+  transitionIntensity: "Controls the length of the stepped dissolves when dissolves are enabled.",
+  motionIntensity: "Controls the zoom used for High Energy accents and Cinematic shots.",
+  flashIntensity: "Controls the brightness of brief flash accents on highlighted cuts.",
+  glitchIntensity: "Controls the strength of brief offset and difference overlays on highlighted cuts.",
+  minClipSeconds: "Shortest allowed time between cuts, in seconds.",
+  maxClipSeconds: "Longest preferred clip length, in seconds.",
+  songTrimStart: "Optional starting point in the backing song, in seconds. Leave blank to start at the beginning.",
+  songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
+  outputWidth: "Optional output width in pixels. Leave blank to use the resolution chosen from all eligible sources.",
+  outputHeight: "Optional output height in pixels. Leave blank to use the resolution chosen from all eligible sources.",
+  outputFps: "Optional output frame rate. Leave blank for 60 fps only when every source is 60 fps, otherwise 30 fps.",
+  transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
+  colorTreatment: "Matched balances source brightness; Warm and Cool add subtle color shifts; Natural leaves color alone.",
+  saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
+  scanToCove: "Imports the finished MP4 into Cove after Resolve renders it.",
+  keepPerformers: "Adds performers linked to footage that actually appears in the finished PMV.",
+  keepTags: "Adds tags from timed segments that actually appear in the finished PMV. General video tags are not inherited.",
+  addPmvTag: "Adds the PMV tag to the imported video."
+};
+
+function InfoButton({ label, help }) {
+  const [open, setOpen] = useState(false);
+  const id = React.useId();
+  return <span className="pmv-info">
+    <button type="button" className="pmv-info-button" aria-label={`About ${label}`} aria-expanded={open} aria-controls={id}
+      onClick={() => setOpen(value => !value)}>i</button>
+    {open && <span id={id} className="pmv-info-text" role="note">{help}</span>}
+  </span>;
+}
+
+function Control({ label, help, children, className = "" }) {
+  const id = React.useId();
+  return <div className={`pmv-control ${className}`}>
+    <div className="pmv-control-heading"><label htmlFor={id}>{label}</label><InfoButton label={label} help={help} /></div>
+    {children(id)}
+  </div>;
+}
+
+function HelpAction({ label, help, children }) {
+  return <span className="pmv-action-help">{children}<InfoButton label={label} help={help} /></span>;
+}
+
+function FolderSetting({ label, help, value, onBrowse, onClear, loading, disabled, optional }) {
+  return <Control label={label} help={help}>{id => <div className="pmv-folder-row">
+    <input id={id} type="text" readOnly value={value || ""} placeholder="Choose a folder" />
+    <button type="button" disabled={disabled} onClick={onBrowse}>{loading ? "Opening…" : "Browse…"}</button>
+    {optional && value && <button type="button" onClick={onClear}>Clear</button>}
+  </div>}</Control>;
+}
 
 const defaultOptions = {
   layout: "three-pane", style: "rhythmic-polish", sourceAudio: "mixed", pacing: 0.5,
@@ -63,16 +119,16 @@ function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions(current => ({ ...current, [key]: value }));
   return <>
     <div className="pmv-grid">
-      <label>Layout<select value={options.layout} onChange={e => set("layout", e.target.value)}><option value="three-pane">Three portrait panes · 16:9 frame</option><option value="full-screen">Full screen · 16:9</option></select></label>
-      <label>Style<select value={options.style} onChange={e => setOptions(current => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] }))}>{Object.keys(styleHelp).map(x => <option key={x} value={x}>{x.replaceAll("-", " ")}</option>)}</select><small>{styleHelp[options.style]}</small></label>
-      <label>Source audio<select value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">Muted</option><option value="mixed">Mixed · brief accents</option><option value="all">All source audio</option></select></label>
+      <Control label="Layout" help={optionHelp.layout}>{id => <select id={id} value={options.layout} onChange={e => set("layout", e.target.value)}><option value="three-pane">Three portrait panes · 16:9 frame</option><option value="full-screen">Full screen · 16:9</option></select>}</Control>
+      <Control label="Style" help={optionHelp.style}>{id => <><select id={id} value={options.style} onChange={e => setOptions(current => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] }))}>{Object.keys(styleHelp).map(x => <option key={x} value={x}>{x.replaceAll("-", " ")}</option>)}</select><small>{styleHelp[options.style]}</small></>}</Control>
+      <Control label="Source audio" help={optionHelp.sourceAudio}>{id => <select id={id} value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">Muted</option><option value="mixed">Mixed · brief accents</option><option value="all">All source audio</option></select>}</Control>
     </div>
     <details><summary>Advanced edit controls</summary><div className="pmv-grid">
-      {[["pacing", "Pacing"], ["beatAdherence", "Beat adherence"], ["sourceDiversity", "Source diversity"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => <label key={key}>{label}<input type="range" min="0" max="1" step="0.05" value={options[key]} onChange={e => set(key, Number(e.target.value))} /><output>{Number(options[key]).toFixed(2)}</output></label>)}
-      {[["minClipSeconds", "Minimum clip (sec)"], ["maxClipSeconds", "Maximum clip (sec)"], ["songTrimStart", "Song start (sec)"], ["songTrimEnd", "Song end (sec)"], ["outputWidth", "Width override"], ["outputHeight", "Height override"], ["outputFps", "FPS override"]].map(([key, label]) => <label key={key}>{label}<input type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} /></label>)}
-      <label>Transitions<select value={options.transitionFamilies?.join(",") || "cut"} onChange={e => set("transitionFamilies", e.target.value.split(","))}><option value="cut">Cuts</option><option value="cut,dissolve">Cuts and dissolves</option></select></label>
-      <label>Color treatment<select value={options.colorTreatment} onChange={e => set("colorTreatment", e.target.value)}><option value="matched">Matched</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="natural">Natural</option></select></label>
-      {[["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"]].map(([key, label]) => <label className="pmv-check" key={key}><input type="checkbox" checked={!!options[key]} onChange={e => set(key, e.target.checked)} />{label}</label>)}
+      {[["pacing", "Pacing"], ["beatAdherence", "Beat adherence"], ["sourceDiversity", "Source diversity"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => <Control key={key} label={label} help={optionHelp[key]}>{id => <div className="pmv-range"><input id={id} type="range" min="0" max="1" step="0.05" value={options[key]} onChange={e => set(key, Number(e.target.value))} /><output>{Number(options[key]).toFixed(2)}</output></div>}</Control>)}
+      {[["minClipSeconds", "Minimum clip (sec)"], ["maxClipSeconds", "Maximum clip (sec)"], ["songTrimStart", "Song start (sec)"], ["songTrimEnd", "Song end (sec)"], ["outputWidth", "Width override"], ["outputHeight", "Height override"], ["outputFps", "FPS override"]].map(([key, label]) => <Control key={key} label={label} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
+      <Control label="Transitions" help={optionHelp.transitionFamilies}>{id => <select id={id} value={options.transitionFamilies?.join(",") || "cut"} onChange={e => set("transitionFamilies", e.target.value.split(","))}><option value="cut">Cuts</option><option value="cut,dissolve">Cuts and dissolves</option></select>}</Control>
+      <Control label="Color treatment" help={optionHelp.colorTreatment}>{id => <select id={id} value={options.colorTreatment} onChange={e => set("colorTreatment", e.target.value)}><option value="matched">Matched</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="natural">Natural</option></select>}</Control>
+      {[["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"]].map(([key, label]) => <Control key={key} label={label} help={optionHelp[key]} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options[key]} onChange={e => set(key, e.target.checked)} />}</Control>)}
     </div></details>
   </>;
 }
@@ -92,6 +148,7 @@ export function PmvSettingsPanel() {
   const [validation, setValidation] = useState(null);
   const [mappingText, setMappingText] = useState("[]");
   const [mappingValid, setMappingValid] = useState(true);
+  const [picking, setPicking] = useState(null);
   useEffect(() => { if (settings) setMappingText(JSON.stringify(settings.pathMappings || [], null, 2)); }, [!!settings]);
   useEffect(() => { if (settings?.companionMode === "auto") api("/local-companion").then(setLocal).catch(e => setError(e.message)); }, [settings?.companionMode]);
   useEffect(() => {
@@ -105,33 +162,48 @@ export function PmvSettingsPanel() {
   const set = (key, value) => setSettings(current => ({ ...current, [key]: value }));
   const defaults = { ...defaultOptions, ...settings.defaults };
   const automatic = settings.companionMode === "auto";
+  const browseFolder = async key => {
+    setPicking(key);
+    setError("");
+    try {
+      const result = await api("/pick-folder", "POST", { kind: key, initialPath: settings[key] || "" });
+      if (result.path) set(key, result.path);
+    } catch (e) { setError(e.message); }
+    finally { setPicking(null); }
+  };
   return <div className="pmv-settings">
     <h3>Auto PMV Maker</h3>
-    <label>Connection<select value={settings.companionMode || "auto"} onChange={e => set("companionMode", e.target.value)}><option value="auto">Automatic (native Windows Cove)</option><option value="external">External (Docker or another PC)</option></select></label>
+    <Control label="Connection" help="Automatic starts the bundled Windows engine with Cove. External connects to the Windows companion when Cove runs in Docker or on another PC.">{id => <select id={id} value={settings.companionMode || "auto"} onChange={e => set("companionMode", e.target.value)}><option value="auto">Automatic (native Windows Cove)</option><option value="external">External (Docker or another PC)</option></select>}</Control>
     {automatic ? <>
       <p>Cove starts the bundled engine in your Windows desktop session. No download, launcher, URL, or token is needed.</p>
       <p role="status">Engine: {local ? local.running ? "running" : local.error || "stopped" : "checking…"}</p>
-      <div className="pmv-actions"><button type="button" onClick={async () => { try { setLocal(await api("/local-companion/start", "POST")); setHealth(null); setError(""); } catch (e) { setError(e.message); } }}>Restart engine</button></div>
+      <div className="pmv-actions"><HelpAction label="Restart engine" help="Restarts the bundled Windows engine after a Resolve scripting change. An active PMV job will be interrupted."><button type="button" onClick={async () => { try { setLocal(await api("/local-companion/start", "POST")); setHealth(null); setError(""); } catch (e) { setError(e.message); } }}>Restart engine</button></HelpAction></div>
       <small>Restart the engine after changing Resolve's scripting setting. This interrupts any active PMV render.</small>
     </> : <details open><summary>External companion setup</summary>
       <p>For Cove in Docker, run the bundled companion on the Windows desktop and connect it here.</p>
-      <div className="pmv-actions"><button type="button" onClick={async () => { try { await downloadCompanion(); setMessage("Companion ZIP downloaded."); } catch (e) { setError(e.message); } }}>Download Windows companion</button></div>
+      <div className="pmv-actions"><HelpAction label="Download Windows companion" help="Downloads the matching Windows companion ZIP for external or Docker mode."><button type="button" onClick={async () => { try { await downloadCompanion(); setMessage("Companion ZIP downloaded."); } catch (e) { setError(e.message); } }}>Download Windows companion</button></HelpAction></div>
       <small>Extract the ZIP, run Start Companion Docker.cmd, then enter the displayed URL and token.</small>
       <div className="pmv-grid">
-        {[["companionUrl", "Companion URL"], ["companionToken", "Companion token"]].map(([key, label]) => <label key={key}>{label}<input type={key === "companionToken" ? "password" : "text"} value={settings[key] || ""} onChange={e => set(key, e.target.value)} /></label>)}
+        {[["companionUrl", "Companion URL", "The local network address printed by the Windows companion."], ["companionToken", "Companion token", "The private token printed by the Windows companion. Leave blank to keep a saved token."]].map(([key, label, help]) => <Control key={key} label={label} help={help}>{id => <input id={id} type={key === "companionToken" ? "password" : "text"} value={settings[key] || ""} onChange={e => set(key, e.target.value)} />}</Control>)}
       </div>
       {settings.companionConfigured && <small>A companion token is saved. Leave the field blank to keep it.</small>}
-      <label>Container → Windows path mappings (JSON)<textarea rows="4" value={mappingText} onChange={e => {
+      <Control label="Container → Windows path mappings (JSON)" help="For Docker, pair each Cove container path with the Windows path that points to the same files. Save mappings before browsing folders.">{id => <textarea id={id} rows="4" value={mappingText} onChange={e => {
         setMappingText(e.target.value);
         try { const value = JSON.parse(e.target.value); if (!Array.isArray(value)) throw new Error(); set("pathMappings", value); setMappingValid(true); setError(""); }
         catch { setMappingValid(false); setError("Path mappings must be a JSON array."); }
-      }} /></label>
+      }} />}</Control>
     </details>}
     <div className="pmv-grid">
-      {[["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => <label key={key}>{label}<input type="text" value={settings[key] || ""} onChange={e => set(key, e.target.value)} /></label>)}
+      <FolderSetting label="Output folder" help="Where finished MP4 files are saved. Cove must also be able to read this folder to import the result." value={settings.outputFolder} onBrowse={() => browseFolder("outputFolder")} loading={picking === "outputFolder"} disabled={!!picking} />
+      <FolderSetting label="Project folder (optional)" help="Where exported Resolve .drp files go when Save project is enabled. Leave blank to save beside the MP4." value={settings.projectFolder} onBrowse={() => browseFolder("projectFolder")} onClear={() => set("projectFolder", "")} loading={picking === "projectFolder"} disabled={!!picking} optional />
+      <FolderSetting label="Music folder" help="Root folder for browsing backing songs in the Create PMV popup. Subfolders can be browsed there." value={settings.musicFolder} onBrowse={() => browseFolder("musicFolder")} onClear={() => set("musicFolder", "")} loading={picking === "musicFolder"} disabled={!!picking} optional />
     </div>
     <h4>Job defaults</h4><OptionForm options={defaults} setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)} />
-    <div className="pmv-actions"><button onClick={async () => { try { setHealth(await api("/health")); } catch (e) { setError(e.message); } }}>Check Resolve</button><button disabled={validation?.state === "queued" || validation?.state === "running"} onClick={async () => { try { setValidation(await api("/validation", "POST")); setError(""); } catch (e) { setError(e.message); } }}>Run Resolve compatibility check</button><button disabled={!automatic && !mappingValid} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); if (automatic) setLocal(await api("/local-companion")); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></div>
+    <div className="pmv-actions">
+      <HelpAction label="Check Resolve" help="Checks whether the companion can connect to an installed Resolve Studio and required media tools."><button onClick={async () => { try { setHealth(await api("/health")); } catch (e) { setError(e.message); } }}>Check Resolve</button></HelpAction>
+      <HelpAction label="Run Resolve compatibility check" help="Renders 18 short test combinations in Resolve and validates their output for this Resolve version."><button disabled={validation?.state === "queued" || validation?.state === "running"} onClick={async () => { try { setValidation(await api("/validation", "POST")); setError(""); } catch (e) { setError(e.message); } }}>Run Resolve compatibility check</button></HelpAction>
+      <HelpAction label="Save settings" help="Saves folders, companion connection, path mappings, and job defaults in Cove."><button disabled={!automatic && !mappingValid} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); if (automatic) setLocal(await api("/local-companion")); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></HelpAction>
+    </div>
     {health && <p role="status">{health.ok ? `${health.product} ${health.version} ready` : health.error}</p>}
     {validation && validation.state !== "idle" && <p role="status">Compatibility check: {validation.message}{validation.error ? ` — ${validation.error}` : ""}</p>}
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
@@ -169,16 +241,16 @@ function PmvDialog({ context, close }) {
     <p>{preview ? `${preview.eligibleCount} eligible sources · ${preview.proposedFilename}` : "Checking sources…"}</p>
     {!!preview?.exclusions?.length && <details><summary>{preview.exclusions.length} excluded sources</summary><ul>{preview.exclusions.map((x, i) => <li key={i}>{x}</li>)}</ul></details>}
     <fieldset><legend>Backing audio</legend><div className="pmv-grid">
-      <label>Source<select value={audio.kind} onChange={e => setAudio(e.target.value === "video" && context.entityType === "video" && scope.entityIds.length === 1
-        ? { kind: "video", coveVideoId: scope.entityIds[0] } : { kind: e.target.value })}><option value="cove">Cove audio</option><option value="folder">Music folder</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select></label>
-      {audio.kind === "cove" && <><label>Search<input value={query} onChange={e => setQuery(e.target.value)} /></label><label>Track<select value={audio.coveAudioId || ""} onChange={e => setAudio({ kind: "cove", coveAudioId: Number(e.target.value) })}><option value="">Choose track</option>{audioItems.map(x => <option value={x.id} key={x.id}>{x.title || x.minPath}</option>)}</select></label></>}
-      {audio.kind === "folder" && <><label>Folder<input value={folderPath} onChange={e => setFolderPath(e.target.value)} /></label><div>{folderItems.map(x => <button key={x.path} onClick={() => x.kind === "folder" ? setFolderPath(x.path) : setAudio({ kind: "folder", path: x.path })}>{x.kind === "folder" ? "📁" : "♫"} {x.name}</button>)}</div><p>{audio.path || "Choose a file"}</p></>}
-      {audio.kind === "youtube" && <label>YouTube URL<input type="url" value={audio.url || ""} onChange={e => setAudio({ kind: "youtube", url: e.target.value })} /></label>}
-      {audio.kind === "video" && <><label>Search Cove videos<input value={videoQuery} onChange={e => setVideoQuery(e.target.value)} /></label><label>Video<select value={audio.coveVideoId || ""} onChange={e => setAudio({ kind: "video", coveVideoId: Number(e.target.value) })}><option value="">Choose video</option>{videoItems.map(x => <option key={x.id} value={x.id}>{x.title || x.minPath || `Video ${x.id}`}</option>)}</select></label></>}
+      <Control label="Source" help="Choose a backing song from Cove, the configured music folder, YouTube, or a Cove video's audio.">{id => <select id={id} value={audio.kind} onChange={e => setAudio(e.target.value === "video" && context.entityType === "video" && scope.entityIds.length === 1
+        ? { kind: "video", coveVideoId: scope.entityIds[0] } : { kind: e.target.value })}><option value="cove">Cove audio</option><option value="folder">Music folder</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control>
+      {audio.kind === "cove" && <><Control label="Search" help="Filter Cove's audio library by title.">{id => <input id={id} value={query} onChange={e => setQuery(e.target.value)} />}</Control><Control label="Track" help="The Cove audio record used as the backing song.">{id => <select id={id} value={audio.coveAudioId || ""} onChange={e => setAudio({ kind: "cove", coveAudioId: Number(e.target.value) })}><option value="">Choose track</option>{audioItems.map(x => <option value={x.id} key={x.id}>{x.title || x.minPath}</option>)}</select>}</Control></>}
+      {audio.kind === "folder" && <><Control label="Folder" help="Browse subfolders of the music folder set in Auto PMV Maker settings. Choose an audio file below.">{id => <div className="pmv-folder-row"><input id={id} readOnly value={folderPath || "Music folder"} /><button type="button" disabled={!folderPath} onClick={() => setFolderPath(folderPath.split(/[\\/]/).slice(0, -1).join("/"))}>Up</button></div>}</Control><div className="pmv-file-list">{folderItems.map(x => <button type="button" key={x.path} onClick={() => x.kind === "folder" ? setFolderPath(x.path) : setAudio({ kind: "folder", path: x.path })}>{x.kind === "folder" ? "📁" : "♫"} {x.name}</button>)}</div><p>{audio.path || "Choose a file"}</p></>}
+      {audio.kind === "youtube" && <Control label="YouTube URL" help="Paste an HTTPS YouTube video URL. The companion downloads only its audio for the PMV.">{id => <input id={id} type="url" value={audio.url || ""} onChange={e => setAudio({ kind: "youtube", url: e.target.value })} />}</Control>}
+      {audio.kind === "video" && <><Control label="Search Cove videos" help="Filter Cove videos by title to find the source of your backing audio.">{id => <input id={id} value={videoQuery} onChange={e => setVideoQuery(e.target.value)} />}</Control><Control label="Video" help="Extracts this Cove video's audio as the backing song.">{id => <select id={id} value={audio.coveVideoId || ""} onChange={e => setAudio({ kind: "video", coveVideoId: Number(e.target.value) })}><option value="">Choose video</option>{videoItems.map(x => <option key={x.id} value={x.id}>{x.title || x.minPath || `Video ${x.id}`}</option>)}</select>}</Control></>}
     </div></fieldset>
     <OptionForm options={options} setOptions={setOptions} />
     {(error || settingsError) && <p role="alert">{error || settingsError}</p>}
-    <footer><button onClick={close}>Cancel</button><button disabled={busy || !preview?.eligibleCount} onClick={create}>{busy ? "Queueing…" : "Create"}</button></footer>
+    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={close}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || !preview?.eligibleCount} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
   </div></div>;
 }
 

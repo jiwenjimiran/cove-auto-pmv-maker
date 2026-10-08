@@ -4,6 +4,12 @@ namespace Cove.PmvMaker;
 
 public sealed record PathMapping(string ContainerPrefix, string HostPrefix);
 
+public sealed class FolderPickerRequest
+{
+    public string Kind { get; set; } = "";
+    public string InitialPath { get; set; } = "";
+}
+
 public sealed class PmvSettings
 {
     public string CompanionMode { get; set; } = "auto";

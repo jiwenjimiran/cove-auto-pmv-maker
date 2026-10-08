@@ -80,6 +80,27 @@ class CompanionApiTests(unittest.TestCase):
             listener.shutdown()
             listener.server_close()
 
+    def test_folder_picker_requires_auth_and_returns_dialog_selection(self):
+        server.TOKEN = "a" * 32
+        listener = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=listener.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{listener.server_port}"
+        payload = json.dumps({"initialPath": "C:\\Music", "title": "Choose music folder"}).encode()
+        try:
+            with patch.object(server, "pick_folder", return_value={"path": "C:\\Music"}) as dialog:
+                with self.assertRaises(HTTPError) as denied:
+                    urlopen(Request(base + "/pick-folder", data=payload, method="POST"), timeout=2)
+                self.assertEqual(denied.exception.code, 401)
+                denied.exception.close()
+                request = Request(base + "/pick-folder", data=payload, method="POST",
+                                  headers={"Authorization": "Bearer " + server.TOKEN})
+                self.assertEqual(json.load(urlopen(request, timeout=2))["path"], "C:\\Music")
+                dialog.assert_called_once_with("C:\\Music", "Choose music folder")
+        finally:
+            listener.shutdown()
+            listener.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

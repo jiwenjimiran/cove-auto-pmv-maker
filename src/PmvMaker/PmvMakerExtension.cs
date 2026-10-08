@@ -26,7 +26,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.6";
+    public string Version => "0.1.7";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -114,6 +114,39 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             else if (_local is not null)
                 await _local.StopAsync(ctx.RequestAborted);
             return Results.Json(PublicSettings(settings), Json);
+        }).RequireCovePermission("system.settings.write");
+        MapPostResult(endpoints, "/api/ext/pmv/pick-folder", async (HttpContext ctx) =>
+        {
+            try
+            {
+                var request = await ctx.Request.ReadFromJsonAsync<FolderPickerRequest>(Json, ctx.RequestAborted) ?? new();
+                var title = request.Kind switch
+                {
+                    "outputFolder" => "Choose PMV output folder",
+                    "musicFolder" => "Choose music folder",
+                    "projectFolder" => "Choose Resolve project folder",
+                    _ => null
+                };
+                if (title is null) return Results.BadRequest(new { message = "Choose a supported folder setting." });
+                var settings = await EffectiveSettingsAsync(ctx.RequestAborted);
+                var initial = string.IsNullOrWhiteSpace(request.InitialPath) ? "" : ToHost(request.InitialPath, settings);
+                using var post = NewRequest(HttpMethod.Post, settings, "pick-folder");
+                post.Content = JsonContent.Create(new { title, initialPath = initial }, options: Json);
+                using var pickerClient = new HttpClient { Timeout = TimeSpan.FromMinutes(11) };
+                using var response = await pickerClient.SendAsync(post, ctx.RequestAborted);
+                var result = await response.Content.ReadFromJsonAsync<JsonElement>(Json, ctx.RequestAborted);
+                if (!response.IsSuccessStatusCode)
+                    return Results.BadRequest(new { message = result.TryGetProperty("message", out var error)
+                        ? error.GetString() : "Windows folder dialog failed." });
+                if (result.TryGetProperty("cancelled", out var cancelled) && cancelled.GetBoolean())
+                    return Results.Json(new { cancelled = true }, Json);
+                var hostPath = result.GetProperty("path").GetString() ?? "";
+                var covePath = ToCove(hostPath, settings);
+                if (request.Kind != "projectFolder" && !Directory.Exists(covePath))
+                    return Results.BadRequest(new { message = "The selected Windows folder is not readable by Cove. For Docker, add its container-to-Windows path mapping, save settings, then browse again." });
+                return Results.Json(new { path = covePath }, Json);
+            }
+            catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
         }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/health", async (HttpContext ctx) =>
         {

@@ -37,6 +37,12 @@ try
     if (!startJson.RootElement.TryGetProperty("message", out _))
         throw new Exception("Validation start endpoint did not return JSON.");
 
+    using var invalidFolder = await client.PostAsJsonAsync(address + "/api/ext/pmv/pick-folder",
+        new FolderPickerRequest { Kind = "unsupported" });
+    using var invalidFolderJson = await ReadJson(invalidFolder, HttpStatusCode.BadRequest);
+    if (!invalidFolderJson.RootElement.GetProperty("message").GetString()!.Contains("supported folder"))
+        throw new Exception("Folder picker request validation was missing.");
+
     using var put = await client.PutAsJsonAsync(address + "/api/ext/pmv/settings",
         new PmvSettings { CompanionMode = "external", CompanionUrl = "invalid" });
     using var putJson = await ReadJson(put, HttpStatusCode.BadRequest);

@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 import shutil
+import subprocess
 import threading
 import traceback
 import uuid
@@ -21,8 +22,32 @@ from resolve_adapter import connect, render
 JOBS = {}
 LOCK = threading.Lock()
 RENDER_LOCK = threading.Lock()
+PICKER_LOCK = threading.Lock()
 TOKEN = ""
 VALIDATION_STATE = {"state": "idle", "progress": 0, "message": "Not run", "error": None}
+
+
+def pick_folder(initial_path="", title="Choose a folder"):
+    if os.name != "nt":
+        raise RuntimeError("Folder browsing requires the Windows desktop companion.")
+    if not PICKER_LOCK.acquire(blocking=False):
+        raise RuntimeError("A folder dialog is already open on the Windows desktop.")
+    try:
+        command = ["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File",
+                   str(Path(__file__).with_name("Pick Folder.ps1")), "-InitialPath", initial_path, "-Title", title]
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=600, creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode:
+            raise RuntimeError("Windows folder dialog failed: " + (result.stderr.strip() or result.stdout.strip())[-500:])
+        chosen = next((line.removeprefix("PMV_PICKED:").strip() for line in result.stdout.splitlines()
+                       if line.startswith("PMV_PICKED:")), "")
+        if not chosen:
+            return {"cancelled": True}
+        if not Path(chosen).is_dir():
+            raise RuntimeError("The selected folder is no longer available on the Windows desktop.")
+        return {"path": str(Path(chosen).resolve())}
+    finally:
+        PICKER_LOCK.release()
 
 
 def validate_resolve():
@@ -197,6 +222,19 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        if path == "/pick-folder":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 4096:
+                    raise ValueError("Invalid folder request")
+                payload = json.loads(self.rfile.read(length))
+                title = payload.get("title", "Choose a folder")
+                initial = payload.get("initialPath", "")
+                if not isinstance(title, str) or not isinstance(initial, str) or len(title) > 100 or len(initial) > 2048:
+                    raise ValueError("Invalid folder request")
+                return self.reply(200, pick_folder(initial, title))
+            except Exception as exc:
+                return self.reply(400, {"message": str(exc)})
         if path == "/validation":
             with LOCK:
                 if VALIDATION_STATE["state"] in ("queued", "running"):
