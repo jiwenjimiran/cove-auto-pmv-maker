@@ -63,7 +63,7 @@ function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions(current => ({ ...current, [key]: value }));
   return <>
     <div className="pmv-grid">
-      <label>Layout<select value={options.layout} onChange={e => set("layout", e.target.value)}><option value="three-pane">Three panes · 9:16</option><option value="full-screen">Full screen · 16:9</option></select></label>
+      <label>Layout<select value={options.layout} onChange={e => set("layout", e.target.value)}><option value="three-pane">Three portrait panes · 16:9 frame</option><option value="full-screen">Full screen · 16:9</option></select></label>
       <label>Style<select value={options.style} onChange={e => setOptions(current => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] }))}>{Object.keys(styleHelp).map(x => <option key={x} value={x}>{x.replaceAll("-", " ")}</option>)}</select><small>{styleHelp[options.style]}</small></label>
       <label>Source audio<select value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">Muted</option><option value="mixed">Mixed · brief accents</option><option value="all">All source audio</option></select></label>
     </div>

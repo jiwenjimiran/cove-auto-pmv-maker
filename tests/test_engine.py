@@ -16,9 +16,9 @@ class EngineTests(unittest.TestCase):
 
     def test_output_format_uses_every_source(self):
         sources = [self.source(1, height=720, fps=60), self.source(2, height=720, fps=60)]
-        self.assertEqual(choose_format(sources, "three-pane", {}), (720, 1280, 60))
+        self.assertEqual(choose_format(sources, "three-pane", {}), (1280, 720, 60))
         portrait = [{**sources[0], "width": 720, "height": 1280}, {**sources[1], "width": 720, "height": 1280}]
-        self.assertEqual(choose_format(portrait, "three-pane", {}), (720, 1280, 60))
+        self.assertEqual(choose_format(portrait, "three-pane", {}), (1280, 720, 60))
         sources.append(self.source(3, height=2160, fps=30))
         self.assertEqual(choose_format(sources, "full-screen", {}), (1920, 1080, 30))
         self.assertEqual(choose_format(sources, "full-screen", {"outputWidth": 1280, "outputHeight": 720, "outputFps": 60}), (1280, 720, 60))

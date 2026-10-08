@@ -51,8 +51,6 @@ def choose_format(sources, layout, options):
         short_sides = {min(int(s["width"]), int(s["height"])) for s in sources}
         base = next(iter(short_sides)) if len(short_sides) == 1 and next(iter(short_sides)) in (720, 2160) else 1080
         width, height = (round(base * 16 / 9), base)
-        if layout == "three-pane":
-            width, height = base, round(base * 16 / 9)  # 1080x1920, 720x1280, 2160x3840
     fps = int(options.get("outputFps") or (60 if all(59.5 <= float(s["fps"]) <= 60.5 for s in sources) else 30))
     if width < 320 or height < 320 or width > 7680 or height > 7680 or fps not in (24, 25, 30, 50, 60):
         raise ValueError("Unsupported render size or frame rate")

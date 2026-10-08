@@ -6,9 +6,10 @@ import sys
 import time
 import re
 import json
+import uuid
 from pathlib import Path
 
-from engine import run
+from engine import probe, run
 
 MODULES = Path(os.environ.get("RESOLVE_SCRIPT_API", r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting")) / "Modules"
 VALIDATION = Path(__file__).with_name("validated-version.json")
@@ -46,6 +47,11 @@ def check(ok, label):
     return ok
 
 
+def media_key(path):
+    # Resolve may expand Windows 8.3 names while Python keeps the short path.
+    return os.path.normcase(os.path.realpath(path))
+
+
 def source_luma(path):
     # A tiny decode sample gives a stable brightness target without copying the master.
     try:
@@ -71,21 +77,24 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
            require_validation=True):
     resolve = connect(require_validation=require_validation)
     manager = resolve.GetProjectManager()
-    project_name = "PMVMAKER_TMP_" + Path(output_path).stem + "_" + str(int(time.time()))
-    project = check(manager.CreateProject(project_name), "CreateProject")
+    project_name = "PMVMAKER_TMP_" + uuid.uuid4().hex
+    project = manager.CreateProject(project_name)
+    if not project:
+        raise RuntimeError("Resolve could not create a temporary project. Open an editable project in a local project library, then retry. The scripting API reports database: " + str(manager.GetCurrentDatabase()))
     job_id = None
     try:
-        check(project.SetSetting("timelineResolutionWidth", str(width)), "timeline width")
-        check(project.SetSetting("timelineResolutionHeight", str(height)), "timeline height")
-        check(project.SetSetting("timelineFrameRate", str(fps)), "timeline fps")
+        check(project.SetSettings({"timelineResolutionWidth": str(width)}), "timeline width")
+        check(project.SetSettings({"timelineResolutionHeight": str(height)}), "timeline height")
+        check(project.SetSettings({"timelineFrameRate": str(fps)}), "timeline fps")
+        check(manager.SaveProject(), "SaveProject before media import")
         media_pool = project.GetMediaPool()
         folder = media_pool.GetCurrentFolder()
         media_storage = resolve.GetMediaStorage()
-        paths = list(dict.fromkeys([c.path for c in clips] + [audio_path]))
+        paths = list(dict.fromkeys(os.path.realpath(path) for path in [c.path for c in clips] + [audio_path]))
         for path in paths:
             if not Path(path).is_file():
                 raise RuntimeError("Resolve cannot read " + path)
-        imported = media_storage.AddItemListToMediaPool(paths)
+        imported = media_storage.AddItemListToMediaPool([{"media": path} for path in paths])
         if not imported or len(imported) != len(paths):
             # Some versions import an existing item only once; resolve by path.
             imported = folder.GetClipList()
@@ -93,15 +102,35 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         for item in imported:
             item_path = item.GetClipProperty("File Path")
             if item_path:
-                items[os.path.normcase(os.path.normpath(item_path))] = item
+                items[media_key(item_path)] = item
         for path in paths:
-            if os.path.normcase(os.path.normpath(path)) not in items:
-                raise RuntimeError("Resolve did not import " + path)
+            if media_key(path) not in items:
+                sample = imported[0].GetClipProperty() if imported else None
+                raise RuntimeError("Resolve did not import " + path + "; item count: " + str(len(imported or []))
+                                   + "; folder count: " + str(len(folder.GetClipList() or []))
+                                   + "; first properties: " + repr(sample))
         timeline = check(media_pool.CreateEmptyTimeline(project_name), "CreateEmptyTimeline")
         check(project.SetCurrentTimeline(timeline), "SetCurrentTimeline")
         check(timeline.SetStartTimecode("00:00:00:00"), "timeline start timecode")
         layout = options.get("layout", "three-pane")
         pane_count = 3 if layout == "three-pane" else 1
+        source_sizes = {}
+        if pane_count == 3:
+            for path in {clip.path for clip in clips}:
+                video = next(stream for stream in probe(path)["streams"] if stream["codec_type"] == "video")
+                source_width, source_height = int(video["width"]), int(video["height"])
+                rotation = int(float(video.get("tags", {}).get("rotate", 0) or 0))
+                for side_data in video.get("side_data_list", []):
+                    rotation = int(float(side_data.get("rotation", rotation) or 0))
+                if rotation % 180:
+                    source_width, source_height = source_height, source_width
+                source_sizes[path] = (source_width, source_height)
+        # AppendToTimeline does not create a requested upper track on every
+        # Resolve version. Reserve the tracks used by panes and accents first.
+        for _ in range(pane_count * 4 - timeline.GetTrackCount("video")):
+            check(timeline.AddTrack("video"), "AddTrack video")
+        for _ in range(1 - timeline.GetTrackCount("audio")):
+            check(timeline.AddTrack("audio"), "AddTrack audio")
         treatment = options.get("colorTreatment", "matched")
         luma = {path: source_luma(path) for path in {clip.path for clip in clips}} if treatment == "matched" else {}
         transition_on = "dissolve" in (options.get("transitionFamilies") or [])
@@ -114,7 +143,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         def append_part(clip, offset, length, record_start, track_index, opacity=None, composite=None):
             if cancel.is_set():
                 raise InterruptedError("Timeline build cancelled")
-            source = items[os.path.normcase(os.path.normpath(clip.path))]
+            source = items[media_key(clip.path)]
             start = round((clip.source_start + offset) * fps)
             count = max(1, round(length * fps))
             at = round(record_start * fps)
@@ -122,22 +151,31 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                      "recordFrame": at, "trackIndex": track_index, "mediaType": 1}
             result = media_pool.AppendToTimeline([entry])
             if not result:
-                raise RuntimeError(f"Resolve could not append video {clip.video_id} at {at}")
+                raise RuntimeError(f"Resolve could not append video {clip.video_id} at {at} on track {track_index}; source frames {start}-{start + count - 1}; video tracks {timeline.GetTrackCount('video')}; timeline frames {timeline.GetStartFrame()}-{timeline.GetEndFrame()}; track items {len(timeline.GetItemListInTrack('video', track_index) or [])}")
             item = result[0]
+            base_zoom = 1.0
             if pane_count == 3:
                 pane_width = width / 3
+                source_width, source_height = source_sizes[clip.path]
+                fill_scale = max(width / source_width, height / source_height)
+                pane_scale = max(pane_width / source_width, height / source_height)
+                base_zoom = pane_scale / fill_scale
+                visible_width = source_width * pane_scale
+                side_crop = max(0.0, (visible_width - pane_width) / 2)
                 check(item.SetProperty("Scaling", resolve.SCALE_FILL), "pane scaling")
+                check(item.SetProperty("ZoomX", base_zoom), "pane zoom X")
+                check(item.SetProperty("ZoomY", base_zoom), "pane zoom Y")
                 check(item.SetProperty("Pan", (clip.pane - 1) * pane_width), "pane position")
-                check(item.SetProperty("CropLeft", clip.pane * pane_width), "left pane crop")
-                check(item.SetProperty("CropRight", (2 - clip.pane) * pane_width), "right pane crop")
+                check(item.SetProperty("CropLeft", side_crop), "left pane crop")
+                check(item.SetProperty("CropRight", side_crop), "right pane crop")
             else:
                 check(item.SetProperty("Scaling", resolve.SCALE_FILL), "full-screen scaling")
             if style == "high-energy" and clip.accent:
-                zoom = 1 + 0.1 * motion_intensity
+                zoom = base_zoom * (1 + 0.1 * motion_intensity)
                 check(item.SetProperty("ZoomX", zoom), "accent zoom X")
                 check(item.SetProperty("ZoomY", zoom), "accent zoom Y")
             elif style == "cinematic":
-                zoom = 1 + 0.03 * motion_intensity
+                zoom = base_zoom * (1 + 0.03 * motion_intensity)
                 check(item.SetProperty("ZoomX", zoom), "cinematic zoom X")
                 check(item.SetProperty("ZoomY", zoom), "cinematic zoom Y")
             if opacity is not None:
@@ -158,9 +196,16 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                     fade = min(0.5 * transition_intensity, clip.duration * 0.25, previous.duration * 0.25)
                     fade_frames = max(1, round(fade * fps))
                     fade = fade_frames / fps
-                    for frame in range(fade_frames):
-                        append_part(clip, frame / fps, 1 / fps, clip.record_start - fade + frame / fps,
-                                    pane_count + pane + 1, opacity=100 * (frame + 1) / fade_frames)
+                    if fade_frames >= 4:
+                        first_frames = (fade_frames + 1) // 2
+                        append_part(clip, 0, first_frames / fps, clip.record_start - fade,
+                                    pane_count + pane + 1, opacity=25)
+                        append_part(clip, first_frames / fps, (fade_frames - first_frames) / fps,
+                                    clip.record_start - fade + first_frames / fps,
+                                    pane_count + pane + 1, opacity=75)
+                    else:
+                        append_part(clip, 0, fade, clip.record_start - fade,
+                                    pane_count + pane + 1, opacity=50)
                 append_part(clip, fade, clip.duration - fade, clip.record_start, pane + 1)
                 if clip.accent and flash_intensity > 0:
                     append_part(clip, 0, min(0.12, clip.duration), clip.record_start,
@@ -171,7 +216,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                                          clip.record_start, pane_count * 3 + pane + 1,
                                          opacity=35 * glitch_intensity, composite=resolve.COMPOSITE_DIFF)
                     check(effect.SetProperty("Pan", ((pane - 1) * width / 3 if pane_count == 3 else 0) + 20 * glitch_intensity), "glitch offset")
-        audio_item = items[os.path.normcase(os.path.normpath(audio_path))]
+        audio_item = items[media_key(audio_path)]
         result = media_pool.AppendToTimeline([{"mediaPoolItem": audio_item, "startFrame": 0,
                                                "endFrame": max(1, round(max(c.record_start + c.duration for c in clips) * fps)) - 1,
                                                "recordFrame": 0, "trackIndex": 1, "mediaType": 2}])
@@ -187,8 +232,9 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         settings = {"SelectAllFrames": True, "TargetDir": str(Path(output_path).parent),
                     "CustomName": Path(output_path).stem, "ExportVideo": True, "ExportAudio": True,
                     "FormatWidth": width, "FormatHeight": height, "FrameRate": fps, "AudioCodec": "aac",
-                    "AudioSampleRate": 48000, "VideoQuality": "Best", "ReplaceExistingFilesInPlace": False}
-        check(project.SetRenderSettings(settings), "render settings")
+                    "AudioSampleRate": 48000}
+        for key, value in settings.items():
+            check(project.SetRenderSettings({key: value}), f"render setting {key}={value!r}")
         job_id = check(project.AddRenderJob(), "AddRenderJob")
         progress(55, "Rendering H.264 MP4 in Resolve")
         check(project.StartRendering(job_id), "StartRendering")
@@ -214,4 +260,5 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         if job_id:
             project.DeleteRenderJob(job_id)
         check(manager.CloseProject(project), "CloseProject")
-        check(manager.DeleteProject(project_name), "DeleteProject")
+        if project_name in (manager.GetProjectListInCurrentFolder() or []):
+            check(manager.DeleteProject(project_name), "DeleteProject")

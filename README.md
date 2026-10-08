@@ -15,14 +15,14 @@ The current Cove UI needs [the included host patch](patches/cove-ui.patch) for p
 
 The Resolve compatibility check runs from Cove settings after setup and after each Resolve version change. It checks the output format, duration, audio stream, and three-pane colors. Manual inspection of transition quality and beat timing is still needed before relying on the first Studio installation. The companion health endpoint checks scripting access, Studio, FFmpeg, and the check marker. Cove refuses to queue a render without a healthy companion or output folder.
 
-This is a preview release. The Resolve Studio render and compatibility checks still require a Studio installation and have not yet been validated in Studio.
+This is a preview release. The Resolve render and compatibility checks have been exercised with Studio 21.1.1.10; other versions require their own check.
 
 ## Current implementation notes
 
 - Source selection supports videos, performers, studios, and tags. Tag actions use only timed video segments. Detail Videos tabs pass their current video filter and search query to the server, which resolves all matching pages.
 - The popup supports Cove audio search, recursive folder browsing, YouTube URL, and selected Cove video audio. Per-job controls override saved defaults.
 - Jobs are exclusive in Cove and serialized again in the companion. Cancellation propagates to FFmpeg and Resolve. The companion returns used video and segment IDs for metadata import.
-- Default render is H.264 MP4 with a song-led cut grid, 9:16 three-pane or 16:9 full-screen layout, and a final audio limiter. Three-pane clips are placed on separate Resolve tracks. Resolve timeline overlays implement stepped dissolves, flashes, and glitches; color treatment uses CDL.
+- Default render is H.264 MP4 with a song-led cut grid, a 16:9 frame with three side-by-side portrait panes or a 16:9 full-screen layout, and a final audio limiter. Three-pane clips are placed on separate Resolve tracks. Resolve timeline overlays implement stepped dissolves, flashes, and glitches; color treatment uses CDL.
 - Resolve's scripting API must be tested with a short render on the target Studio installation before relying on crop, scaling, grading, and compositing behavior. Use **Run Resolve compatibility check** in Cove settings to render all three styles, both layouts, and all source-audio modes. It checks H.264/AAC output and samples pane colors.
 
 ## Checks
