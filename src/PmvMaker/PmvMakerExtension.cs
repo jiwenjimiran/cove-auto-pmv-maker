@@ -25,7 +25,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.1";
+    public string Version => "0.1.2";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -60,12 +60,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapGet("/api/ext/pmv/settings", async (HttpContext ctx) => Results.Json(PublicSettings(await SettingsAsync(ctx.RequestAborted)), Json))
+        MapGetResult(endpoints, "/api/ext/pmv/settings", async (HttpContext ctx) => Results.Json(PublicSettings(await SettingsAsync(ctx.RequestAborted)), Json))
             .RequireCovePermission("system.settings.write");
-        endpoints.MapGet("/api/ext/pmv/defaults", async (HttpContext ctx) =>
+        MapGetResult(endpoints, "/api/ext/pmv/defaults", async (HttpContext ctx) =>
             Results.Json(new { defaults = (await SettingsAsync(ctx.RequestAborted)).Defaults }, Json))
             .RequireCovePermission("videos.read");
-        endpoints.MapPut("/api/ext/pmv/settings", async (HttpContext ctx) =>
+        MapPutResult(endpoints, "/api/ext/pmv/settings", async (HttpContext ctx) =>
         {
             var settings = await ctx.Request.ReadFromJsonAsync<PmvSettings>(Json, ctx.RequestAborted) ?? new();
             if (string.IsNullOrWhiteSpace(settings.CompanionUrl) || !Uri.TryCreate(settings.CompanionUrl, UriKind.Absolute, out var uri)
@@ -76,12 +76,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             await _store.SetAsync("settings", JsonSerializer.Serialize(settings, Json), ctx.RequestAborted);
             return Results.Json(PublicSettings(settings), Json);
         }).RequireCovePermission("system.settings.write");
-        endpoints.MapGet("/api/ext/pmv/health", async (HttpContext ctx) =>
+        MapGetResult(endpoints, "/api/ext/pmv/health", async (HttpContext ctx) =>
         {
             try { return Results.Json(await CompanionGetAsync(await SettingsAsync(ctx.RequestAborted), "health", ctx.RequestAborted), Json); }
             catch (Exception ex) { return Results.Json(new { ok = false, error = ex.Message }, Json); }
         }).RequireCovePermission("videos.read");
-        endpoints.MapGet("/api/ext/pmv/audio", async (HttpContext ctx) =>
+        MapGetResult(endpoints, "/api/ext/pmv/audio", async (HttpContext ctx) =>
         {
             var q = ctx.Request.Query["q"].ToString();
             await using var scope = _scopes!.CreateAsyncScope();
@@ -94,7 +94,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 rows.Select(a => new EntityRef(EntityKinds.Audio, a.Id.ToString())).ToArray(), ctx.RequestAborted);
             return Results.Json(rows.Where((_, i) => decisions[i].Allowed).Take(50), Json);
         }).RequireCovePermission("audios.read");
-        endpoints.MapGet("/api/ext/pmv/videos", async (HttpContext ctx) =>
+        MapGetResult(endpoints, "/api/ext/pmv/videos", async (HttpContext ctx) =>
         {
             var q = ctx.Request.Query["q"].ToString();
             await using var scope = _scopes!.CreateAsyncScope();
@@ -107,7 +107,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 rows.Select(v => new EntityRef(EntityKinds.Video, v.Id.ToString())).ToArray(), ctx.RequestAborted);
             return Results.Json(rows.Where((_, i) => decisions[i].Allowed).Take(50), Json);
         }).RequireCovePermission("videos.read");
-        endpoints.MapGet("/api/ext/pmv/music", async (HttpContext ctx) =>
+        MapGetResult(endpoints, "/api/ext/pmv/music", async (HttpContext ctx) =>
         {
             var settings = await SettingsAsync(ctx.RequestAborted);
             if (string.IsNullOrWhiteSpace(settings.MusicFolder)) return Results.BadRequest(new { message = "Set a music folder first." });
@@ -120,7 +120,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 .Select(p => new { name = Path.GetFileName(p), path = Path.GetRelativePath(root, p), kind = "file" });
             return Results.Json(folders.Concat(files).OrderBy(x => x.kind).ThenBy(x => x.name), Json);
         }).RequireCovePermission("files.read");
-        endpoints.MapPost("/api/ext/pmv/preview", async (HttpContext ctx) =>
+        MapPostResult(endpoints, "/api/ext/pmv/preview", async (HttpContext ctx) =>
         {
             var request = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
             await using var scope = _scopes!.CreateAsyncScope();
@@ -134,7 +134,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 proposedFilename = PmvNaming.Proposed(settings.OutputFolder, stem, settings.ProjectFolder,
                     request.Options?.SaveProject ?? settings.Defaults.SaveProject) }, Json);
         }).RequireCovePermission("videos.read");
-        endpoints.MapPost("/api/ext/pmv/create", async (HttpContext ctx) =>
+        MapPostResult(endpoints, "/api/ext/pmv/create", async (HttpContext ctx) =>
         {
             var request = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
             var settings = await SettingsAsync(ctx.RequestAborted);
@@ -177,6 +177,17 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             return Results.Accepted(value: new { jobId = id, message = "PMV queued.", exclusions = resolved.Exclusions });
         }).RequireCovePermission("videos.read").RequireCovePermission("videos.write").RequireCovePermission("jobs.run");
     }
+
+    // Use the Delegate overload. The RequestDelegate overload accepts the async lambda but drops
+    // its IResult, producing HTTP 200 with an empty body.
+    private static RouteHandlerBuilder MapGetResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
+        => endpoints.MapGet(pattern, (Delegate)handler);
+
+    private static RouteHandlerBuilder MapPutResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
+        => endpoints.MapPut(pattern, (Delegate)handler);
+
+    private static RouteHandlerBuilder MapPostResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
+        => endpoints.MapPost(pattern, (Delegate)handler);
 
     private async Task RunAsync(PmvRequest request, PmvSettings settings, CovePrincipal? principal, Cove.Core.Interfaces.IJobProgress progress, CancellationToken ct)
     {

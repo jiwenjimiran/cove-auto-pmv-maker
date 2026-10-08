@@ -25,4 +25,4 @@ This is a preview release. The Resolve Studio render and compatibility checks st
 
 ## Checks
 
-Run `python -m unittest discover tests`, `python -m py_compile companion/*.py`, `dotnet run --project tests/PathChecks/PathChecks.csproj`, `dotnet build src/PmvMaker/PmvMaker.csproj`, and `cd frontend; npm run build`.
+Run `python -m unittest discover tests`, `python -m py_compile companion/*.py`, `dotnet run --project tests/PathChecks/PathChecks.csproj`, `dotnet run --project tests/EndpointChecks/EndpointChecks.csproj`, `dotnet build src/PmvMaker/PmvMaker.csproj`, and `cd frontend; npm run build`.

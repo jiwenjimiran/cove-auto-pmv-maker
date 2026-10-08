@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/PmvMaker/PmvMaker.csproj" />
+    <ProjectReference Include="../../../cove/src/Cove.Data/Cove.Data.csproj" />
+  </ItemGroup>
+</Project>
