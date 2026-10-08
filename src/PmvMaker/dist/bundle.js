@@ -117,11 +117,12 @@ function PmvSettingsPanel() {
   return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, /* @__PURE__ */ React.createElement("h3", null, "Auto PMV Maker"), /* @__PURE__ */ React.createElement("label", null, "Connection", /* @__PURE__ */ React.createElement("select", { value: settings.companionMode || "auto", onChange: (e) => set("companionMode", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "auto" }, "Automatic (native Windows Cove)"), /* @__PURE__ */ React.createElement("option", { value: "external" }, "External (Docker or another PC)"))), automatic ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", null, "Cove starts the bundled engine in your Windows desktop session. No download, launcher, URL, or token is needed."), /* @__PURE__ */ React.createElement("p", { role: "status" }, "Engine: ", local ? local.running ? "running" : local.error || "stopped" : "checking\u2026"), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
     try {
       setLocal(await api("/local-companion/start", "POST"));
+      setHealth(null);
       setError("");
     } catch (e) {
       setError(e.message);
     }
-  } }, "Retry engine"))) : /* @__PURE__ */ React.createElement("details", { open: true }, /* @__PURE__ */ React.createElement("summary", null, "External companion setup"), /* @__PURE__ */ React.createElement("p", null, "For Cove in Docker, run the bundled companion on the Windows desktop and connect it here."), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+  } }, "Restart engine")), /* @__PURE__ */ React.createElement("small", null, "Restart the engine after changing Resolve's scripting setting. This interrupts any active PMV render.")) : /* @__PURE__ */ React.createElement("details", { open: true }, /* @__PURE__ */ React.createElement("summary", null, "External companion setup"), /* @__PURE__ */ React.createElement("p", null, "For Cove in Docker, run the bundled companion on the Windows desktop and connect it here."), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
     try {
       await downloadCompanion();
       setMessage("Companion ZIP downloaded.");

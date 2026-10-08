@@ -30,10 +30,18 @@ try
     ready.Headers.Authorization = new AuthenticationHeaderValue("Bearer", connection.Token);
     using var accepted = await client.SendAsync(ready);
     if (!accepted.IsSuccessStatusCode) throw new Exception("Authenticated local request failed.");
+    var restarted = await local.RestartAsync();
+    if (!restarted.Running || local.Connection is null || local.Connection.Value.Token == connection.Token)
+        throw new Exception("Local companion did not restart with a new token: " + restarted.Error);
+    var fresh = local.Connection.Value;
+    using var newReady = new HttpRequestMessage(HttpMethod.Get, fresh.Url + "/ready");
+    newReady.Headers.Authorization = new AuthenticationHeaderValue("Bearer", fresh.Token);
+    using var newAccepted = await client.SendAsync(newReady);
+    if (!newAccepted.IsSuccessStatusCode) throw new Exception("Restarted local companion did not authenticate.");
     await local.StopAsync();
     if (local.Status.Running || local.Connection is not null)
         throw new Exception("Local companion did not stop.");
-    Console.WriteLine("Local companion started, authenticated, and stopped.");
+    Console.WriteLine("Local companion started, authenticated, restarted, and stopped.");
 }
 finally
 {

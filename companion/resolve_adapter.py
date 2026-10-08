@@ -22,7 +22,7 @@ def connect(require_validation=True):
     except Exception as exc:
         raise RuntimeError(f"Resolve scripting API unavailable: {exc}") from exc
     if resolve is None:
-        raise RuntimeError("Resolve is running but its external scripting API is unavailable. Enable local scripting in Resolve Preferences > System > General.")
+        raise RuntimeError("Resolve did not accept the scripting connection. Select Local in Resolve Preferences > System > General, save, then restart the PMV engine in Cove settings.")
     version = resolve.GetVersionString()
     product = resolve.GetProductName()
     if "Studio" not in product:

@@ -26,7 +26,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.4";
+    public string Version => "0.1.5";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -85,7 +85,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 return Results.BadRequest(new { message = "Switch to automatic local mode first." });
             return Results.Json(_local is null
                 ? new LocalCompanionStatus(false, false, "Local companion control is unavailable.")
-                : await _local.EnsureRunningAsync(ctx.RequestAborted), Json);
+                : await _local.RestartAsync(ctx.RequestAborted), Json);
         }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/defaults", async (HttpContext ctx) =>
             Results.Json(new { defaults = (await SettingsAsync(ctx.RequestAborted)).Defaults }, Json))

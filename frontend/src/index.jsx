@@ -111,7 +111,8 @@ export function PmvSettingsPanel() {
     {automatic ? <>
       <p>Cove starts the bundled engine in your Windows desktop session. No download, launcher, URL, or token is needed.</p>
       <p role="status">Engine: {local ? local.running ? "running" : local.error || "stopped" : "checking…"}</p>
-      <div className="pmv-actions"><button type="button" onClick={async () => { try { setLocal(await api("/local-companion/start", "POST")); setError(""); } catch (e) { setError(e.message); } }}>Retry engine</button></div>
+      <div className="pmv-actions"><button type="button" onClick={async () => { try { setLocal(await api("/local-companion/start", "POST")); setHealth(null); setError(""); } catch (e) { setError(e.message); } }}>Restart engine</button></div>
+      <small>Restart the engine after changing Resolve's scripting setting. This interrupts any active PMV render.</small>
     </> : <details open><summary>External companion setup</summary>
       <p>For Cove in Docker, run the bundled companion on the Windows desktop and connect it here.</p>
       <div className="pmv-actions"><button type="button" onClick={async () => { try { await downloadCompanion(); setMessage("Companion ZIP downloaded."); } catch (e) { setError(e.message); } }}>Download Windows companion</button></div>

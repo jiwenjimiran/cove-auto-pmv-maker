@@ -138,6 +138,12 @@ public sealed class LocalCompanion(string archivePath) : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    public async Task<LocalCompanionStatus> RestartAsync(CancellationToken ct = default)
+    {
+        await StopAsync(ct);
+        return await EnsureRunningAsync(ct);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
