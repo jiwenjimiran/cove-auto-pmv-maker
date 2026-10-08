@@ -149,7 +149,8 @@ def do_job(job_id, payload):
             status = health()
             if not status["ok"]:
                 raise RuntimeError(status["error"])
-            if not status.get("validated"):
+            skip_checks = bool(payload.get("skipSetupChecks"))
+            if not skip_checks and not status.get("validated"):
                 raise RuntimeError("Run the Resolve compatibility check for this companion and Resolve version first")
             sources = preflight(payload)
             options = payload.get("options") or {}
@@ -177,7 +178,8 @@ def do_job(job_id, payload):
                 update(40, "Mixing source accents and backing song")
                 mix = mix_audio(song, clips, options, temp, beats[-1], trim_start, cancelled)
                 update(52, "Building Resolve timeline")
-                render(clips, mix, output_path, width, height, fps, options, payload.get("projectFolder", ""), cancelled, update)
+                render(clips, mix, output_path, width, height, fps, options, payload.get("projectFolder", ""), cancelled, update,
+                       require_validation=not skip_checks)
                 state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,
                              usedVideoIds=used_video_ids, usedSegmentIds=used_segment_ids)
         except InterruptedError:

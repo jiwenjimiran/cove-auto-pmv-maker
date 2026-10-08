@@ -26,7 +26,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.8";
+    public string Version => "0.1.9";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -140,7 +140,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 var settings = await EffectiveSettingsAsync(ctx.RequestAborted);
                 var initial = string.IsNullOrWhiteSpace(request.InitialPath) ? "" : ToHost(request.InitialPath, settings);
                 using var post = NewRequest(HttpMethod.Post, settings, "pick-folder");
-                post.Content = JsonContent.Create(new { title, initialPath = initial }, options: Json);
+                post.Content = JsonBody(new { title, initialPath = initial });
                 using var pickerClient = new HttpClient { Timeout = TimeSpan.FromMinutes(11) };
                 using var response = await pickerClient.SendAsync(post, ctx.RequestAborted);
                 var result = await response.Content.ReadFromJsonAsync<JsonElement>(Json, ctx.RequestAborted);
@@ -252,7 +252,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             if (resolved.Videos.Count == 0) return Results.BadRequest(new { message = "No eligible sources.", exclusions = resolved.Exclusions });
             var health = await CompanionGetAsync(settings, "health", ctx.RequestAborted);
             if (!health.GetProperty("ok").GetBoolean()) return Results.BadRequest(new { message = "Resolve Studio companion is unhealthy.", health });
-            if (!health.TryGetProperty("validated", out var validated) || !validated.GetBoolean())
+            if (!settings.SkipSetupChecks && (!health.TryGetProperty("validated", out var validated) || !validated.GetBoolean()))
                 return Results.BadRequest(new { message = "Run the Resolve compatibility check before creating a PMV." });
             var outputFolder = Path.GetFullPath(settings.OutputFolder);
             if (request.Options?.ScanToCove ?? settings.Defaults.ScanToCove)
@@ -267,13 +267,13 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             try { audio = await AudioPayloadAsync(request.Audio, settings, db, scope.ServiceProvider.GetRequiredService<IAuthorizationService>(), principal, ctx.RequestAborted); }
             catch (UnauthorizedAccessException) { return Results.Forbid(); }
             using var preflight = NewRequest(HttpMethod.Post, settings, "preflight");
-            preflight.Content = JsonContent.Create(new
+            preflight.Content = JsonBody(new
             {
                 sources = resolved.Videos.Select(v => new { path = ToHost(v.Path, settings) }),
                 audio,
                 outputFolder = ToHost(settings.OutputFolder, settings),
                 projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings)
-            }, options: Json);
+            });
             using var checkedResponse = await _http.SendAsync(preflight, ctx.RequestAborted);
             if (!checkedResponse.IsSuccessStatusCode)
                 return Results.BadRequest(new { message = await checkedResponse.Content.ReadAsStringAsync(ctx.RequestAborted) });
@@ -295,6 +295,15 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private static RouteHandlerBuilder MapPostResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
         => endpoints.MapPost(pattern, (Delegate)handler);
 
+    private static HttpContent JsonBody<T>(T value)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, Json);
+        var content = new ByteArrayContent(bytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        content.Headers.ContentLength = bytes.Length;
+        return content;
+    }
+
     private async Task RunAsync(PmvRequest request, PmvSettings settings, CovePrincipal? principal, Cove.Core.Interfaces.IJobProgress progress, CancellationToken ct)
     {
         await using var scope = _scopes!.CreateAsyncScope();
@@ -312,11 +321,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             audio = await AudioPayloadAsync(request.Audio, settings, db, scope.ServiceProvider.GetRequiredService<IAuthorizationService>(), principal, ct),
             options,
             outputFolder = ToHost(settings.OutputFolder, settings),
-            projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings)
+            projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings),
+            skipSetupChecks = settings.SkipSetupChecks
         };
         progress.Report(2, "Submitting edit to Resolve Studio companion");
         using var post = NewRequest(HttpMethod.Post, settings, "jobs");
-        post.Content = JsonContent.Create(payload, options: Json);
+        post.Content = JsonBody(payload);
         using var response = await _http.SendAsync(post, ct);
         response.EnsureSuccessStatusCode();
         var submitted = await response.Content.ReadFromJsonAsync<CompanionJob>(Json, ct) ?? throw new InvalidOperationException("Companion gave no job ID.");

@@ -16,6 +16,7 @@ public sealed class PmvSettings
     public string CompanionUrl { get; set; } = "http://127.0.0.1:8765";
     public string CompanionToken { get; set; } = "";
     public bool CompanionConfigured { get; set; }
+    public bool SkipSetupChecks { get; set; }
     public string OutputFolder { get; set; } = "";
     public string ProjectFolder { get; set; } = "";
     public string MusicFolder { get; set; } = "";

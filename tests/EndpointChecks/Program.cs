@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Reflection;
 using Cove.PmvMaker;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -16,6 +17,13 @@ try
     var address = app.Services.GetRequiredService<IServer>()
         .Features.Get<IServerAddressesFeature>()!.Addresses.Single();
     using var client = new HttpClient();
+
+    var bodyFactory = typeof(PmvMakerExtension).GetMethod("JsonBody", BindingFlags.NonPublic | BindingFlags.Static)!
+        .MakeGenericMethod(typeof(FolderPickerRequest));
+    using var folderBody = (HttpContent)bodyFactory.Invoke(null, [new FolderPickerRequest { Kind = "musicFolder" }])!;
+    var folderBytes = await folderBody.ReadAsByteArrayAsync();
+    if (folderBody.Headers.ContentLength != folderBytes.Length || folderBytes.Length == 0)
+        throw new Exception("Companion JSON requests must include a fixed Content-Length.");
 
     using var settings = await client.GetAsync(address + "/api/ext/pmv/settings");
     using var settingsJson = await ReadJson(settings, HttpStatusCode.OK);
