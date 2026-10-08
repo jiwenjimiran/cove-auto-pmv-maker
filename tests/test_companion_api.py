@@ -101,6 +101,33 @@ class CompanionApiTests(unittest.TestCase):
             listener.shutdown()
             listener.server_close()
 
+    def test_uploaded_song_is_accepted_for_job_and_removed(self):
+        server.TOKEN = "a" * 32
+        listener = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=listener.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{listener.server_port}"
+        headers = {"Authorization": "Bearer " + server.TOKEN, "X-PMV-Extension": ".mp3"}
+        try:
+            with tempfile.TemporaryDirectory() as root, patch.object(server, "UPLOAD_ROOT", Path(root)), \
+                    patch.object(server, "audio_duration", return_value=10):
+                request = Request(base + "/uploads", data=b"audio fixture", method="POST", headers=headers)
+                upload_id = json.load(urlopen(request, timeout=2))["uploadId"]
+                uploaded = server.uploaded_song(upload_id)
+                self.assertEqual(uploaded.read_bytes(), b"audio fixture")
+                source = Path(root) / "source.mp4"
+                source.write_bytes(b"video fixture")
+                payload = {"sources": [{"path": str(source)}], "audio": {"kind": "upload", "uploadId": upload_id},
+                           "outputFolder": str(Path(root) / "output")}
+                server.preflight(payload)
+                self.assertEqual(payload["audio"]["path"], str(uploaded))
+                delete = Request(base + "/uploads/" + upload_id, method="DELETE", headers=headers)
+                self.assertTrue(json.load(urlopen(delete, timeout=2))["deleted"])
+                self.assertFalse(uploaded.exists())
+        finally:
+            listener.shutdown()
+            listener.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

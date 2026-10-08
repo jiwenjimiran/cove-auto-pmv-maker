@@ -5,15 +5,17 @@ import argparse
 import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 import uuid
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, gettempdir
 from urllib.parse import urlparse
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, mix_audio, output_stem, prepare_audio, reserve_output
@@ -25,6 +27,34 @@ RENDER_LOCK = threading.Lock()
 PICKER_LOCK = threading.Lock()
 TOKEN = ""
 VALIDATION_STATE = {"state": "idle", "progress": 0, "message": "Not run", "error": None}
+UPLOAD_ROOT = Path(gettempdir()) / "cove-pmv-song-uploads"
+UPLOAD_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff"}
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+
+
+def cleanup_uploads():
+    if not UPLOAD_ROOT.exists():
+        return
+    cutoff = time.time() - 7 * 24 * 60 * 60
+    for path in UPLOAD_ROOT.iterdir():
+        if path.is_file() and path.stat().st_mtime < cutoff:
+            path.unlink(missing_ok=True)
+
+
+def uploaded_song(upload_id):
+    if not isinstance(upload_id, str) or re.fullmatch(r"[0-9a-f]{32}", upload_id) is None:
+        raise ValueError("Invalid uploaded song ID")
+    matches = [path for path in UPLOAD_ROOT.glob(upload_id + ".*") if path.suffix in UPLOAD_EXTENSIONS]
+    if len(matches) != 1 or not matches[0].is_file():
+        raise ValueError("Uploaded song is missing. Choose the file again in Create PMV.")
+    return matches[0]
+
+
+def delete_uploaded_song(upload_id):
+    try:
+        uploaded_song(upload_id).unlink(missing_ok=True)
+    except ValueError:
+        pass
 
 
 def pick_folder(initial_path="", title="Choose a folder"):
@@ -115,6 +145,8 @@ def preflight(payload):
     if audio.get("kind") == "youtube":
         if shutil.which("yt-dlp") is None:
             raise ValueError("yt-dlp is required for YouTube audio")
+    elif audio.get("kind") == "upload":
+        audio["path"] = str(uploaded_song(audio.get("uploadId")))
     elif not Path(audio.get("path", "")).is_file():
         raise ValueError("Resolve cannot read backing audio: " + audio.get("path", ""))
     folder = Path(payload.get("outputFolder") or "")
@@ -188,6 +220,8 @@ def do_job(job_id, payload):
             state.update(state="failed", error=str(exc), message="Render failed")
             traceback.print_exc()
         finally:
+            if (payload.get("audio") or {}).get("kind") == "upload":
+                delete_uploaded_song(payload["audio"].get("uploadId"))
             if marker:
                 marker.unlink(missing_ok=True)
             if output_path and state["state"] != "complete":
@@ -237,6 +271,32 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        if path == "/uploads":
+            target = None
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                extension = self.headers.get("X-PMV-Extension", "").lower()
+                if length <= 0 or length > MAX_UPLOAD_BYTES or extension not in UPLOAD_EXTENSIONS:
+                    raise ValueError("Choose an audio file under 200 MB (MP3, WAV, FLAC, M4A, AAC, OGG, OPUS, or AIFF).")
+                cleanup_uploads()
+                UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+                upload_id = uuid.uuid4().hex
+                target = UPLOAD_ROOT / (upload_id + extension)
+                remaining = length
+                with target.open("xb") as stream:
+                    while remaining:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise ValueError("Song upload ended early")
+                        stream.write(chunk)
+                        remaining -= len(chunk)
+                if audio_duration(str(target)) < 2:
+                    raise ValueError("Choose a song at least two seconds long")
+                return self.reply(201, {"uploadId": upload_id})
+            except Exception as exc:
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                return self.reply(400, {"message": str(exc)})
         if path == "/pick-folder":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -281,6 +341,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        if path.startswith("/uploads/"):
+            delete_uploaded_song(path.split("/")[-1])
+            return self.reply(200, {"deleted": True})
         if not path.startswith("/jobs/"):
             return self.reply(404, {"error": "Not found"})
         state = JOBS.get(path.split("/")[-1])
@@ -300,6 +363,7 @@ if __name__ == "__main__":
     if len(args.token) < 24:
         parser.error("Provide a random token of at least 24 characters via --token or COVE_PMV_TOKEN")
     TOKEN = args.token
+    cleanup_uploads()
     if args.parent_pid:
         threading.Thread(target=watch_parent, args=(args.parent_pid,), daemon=True).start()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()

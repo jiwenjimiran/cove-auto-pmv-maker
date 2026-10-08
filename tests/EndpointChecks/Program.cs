@@ -30,6 +30,27 @@ try
     if (settingsJson.RootElement.GetProperty("defaults").GetProperty("sourceAudio").GetString() != "mixed")
         throw new Exception("Settings endpoint did not return the expected defaults.");
 
+    using var drives = await client.GetAsync(address + "/api/ext/pmv/folders");
+    using var drivesJson = await ReadJson(drives, HttpStatusCode.OK);
+    if (drivesJson.RootElement.GetArrayLength() == 0)
+        throw new Exception("Folder browser returned no filesystem roots.");
+    using var browse = await client.GetAsync(address + "/api/ext/pmv/folders?path=" + Uri.EscapeDataString(Directory.GetCurrentDirectory()));
+    using var browseJson = await ReadJson(browse, HttpStatusCode.OK);
+    var firstFolder = Directory.EnumerateDirectories(Directory.GetCurrentDirectory()).Select(Path.GetFileName).First();
+    if (!browseJson.RootElement.EnumerateArray().Any(folder => folder.GetProperty("name").GetString() == firstFolder))
+        throw new Exception("Folder browser did not return the requested directory's subfolders.");
+    using var unavailable = await client.GetAsync(address + "/api/ext/pmv/folders?path=" + Uri.EscapeDataString(Path.Combine(Directory.GetCurrentDirectory(), Guid.NewGuid().ToString("N"))));
+    using var unavailableJson = await ReadJson(unavailable, HttpStatusCode.BadRequest);
+    if (!unavailableJson.RootElement.TryGetProperty("message", out _))
+        throw new Exception("Folder browser must explain unavailable folders.");
+    using var invalidSong = new HttpRequestMessage(HttpMethod.Post, address + "/api/ext/pmv/upload-audio")
+        { Content = new ByteArrayContent([1, 2, 3]) };
+    invalidSong.Headers.Add("X-PMV-Extension", ".exe");
+    using var invalidSongResponse = await client.SendAsync(invalidSong);
+    using var invalidSongJson = await ReadJson(invalidSongResponse, HttpStatusCode.BadRequest);
+    if (!invalidSongJson.RootElement.GetProperty("message").GetString()!.Contains("audio file"))
+        throw new Exception("Song upload should reject unsupported file types.");
+
     using var defaults = await client.GetAsync(address + "/api/ext/pmv/defaults");
     using var defaultsJson = await ReadJson(defaults, HttpStatusCode.OK);
     if (defaultsJson.RootElement.GetProperty("defaults").GetProperty("layout").GetString() != "three-pane")

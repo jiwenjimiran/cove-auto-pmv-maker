@@ -34,6 +34,23 @@ async function downloadCompanion() {
   window.setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+async function uploadSongFile(file) {
+  const extension = file.name.match(/\.[^.]+$/)?.[0]?.toLowerCase() || "";
+  if (!/^(\.mp3|\.wav|\.flac|\.m4a|\.aac|\.ogg|\.opus|\.aiff)$/.test(extension) || file.size > 200 * 1024 * 1024)
+    throw new Error("Choose an audio file under 200 MB (MP3, WAV, FLAC, M4A, AAC, OGG, OPUS, or AIFF).");
+  const response = await extensionFetch(base + "/upload-audio", { method: "POST",
+    headers: { "Content-Type": "application/octet-stream", "X-PMV-Extension": extension }, body: file });
+  const raw = await response.text();
+  let result = {};
+  if (raw) {
+    try { result = JSON.parse(raw); }
+    catch { throw new Error(`Cove returned an invalid upload response (${response.status}).`); }
+  }
+  if (!response.ok) throw new Error(result.message || `Song upload failed (${response.status}).`);
+  if (!result.uploadId) throw new Error("The companion did not return an uploaded song ID.");
+  return result.uploadId;
+}
+
 export function openPmv(_action, payload) {
   window.dispatchEvent(new CustomEvent("pmvmaker:open", { detail: payload }));
   return { cancelled: true };
@@ -65,6 +82,7 @@ const optionHelp = {
   glitchIntensity: "Minimum and maximum strength of offset and difference accents on highlighted cuts.",
   minClipSeconds: "Shortest allowed time between cuts, in seconds.",
   maxClipSeconds: "Longest preferred clip length, in seconds.",
+  clipLength: "Sets the shortest and longest allowed time between cuts, in seconds.",
   songTrimStart: "Optional starting point in the backing song, in seconds. Leave blank to start at the beginning.",
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
   outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
@@ -109,19 +127,19 @@ function HelpAction({ label, help, children }) {
   return <span className="pmv-action-help">{children}<InfoButton label={label} help={help} /></span>;
 }
 
-function FolderSetting({ label, help, value, onBrowse, onClear, loading, disabled, optional }) {
+function FolderSetting({ label, help, value, onBrowse, onClear, optional }) {
   return <Control label={label} help={help}>{id => <div className="pmv-folder-row">
     <input id={id} type="text" readOnly value={value || ""} placeholder="Choose a folder" />
-    <button type="button" disabled={disabled} onClick={onBrowse}>{loading ? "Opening…" : "Browse…"}</button>
+    <button type="button" onClick={onBrowse}>Browse folders</button>
     {optional && value && <button type="button" onClick={onClear}>Clear</button>}
   </div>}</Control>;
 }
 
-function RangeControl({ label, help, lower, upper, onChange }) {
+function RangeControl({ label, help, lower, upper, onChange, minValue = 0, maxValue = 1, step = 0.05 }) {
   return <Control label={label} help={help}>{id => <div className="pmv-range-pair">
-    <label>Min <input id={id} type="number" min="0" max="1" step="0.05" value={lower}
+    <label>Min <input id={id} type="number" min={minValue} max={maxValue} step={step} value={lower}
       onChange={e => onChange(Math.min(Number(e.target.value), upper), upper)} /></label>
-    <label>Max <input type="number" min="0" max="1" step="0.05" value={upper}
+    <label>Max <input type="number" min={minValue} max={maxValue} step={step} value={upper}
       onChange={e => onChange(lower, Math.max(Number(e.target.value), lower))} /></label>
   </div>}</Control>;
 }
@@ -133,37 +151,44 @@ async function coveFolders(path) {
   return response.json();
 }
 
-function CoveFolderNode({ folder, depth, selected, onSelect }) {
+function filesystemFolders(path) {
+  return api(`/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
+}
+
+function FolderNode({ folder, depth, selected, onSelect, loadChildren, radioName }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (expanded && children === null) coveFolders(folder.path).then(setChildren).catch(e => setError(e.message));
-  }, [expanded, folder.path]);
+    if (expanded && children === null) loadChildren(folder.path).then(setChildren).catch(e => setError(e.message));
+  }, [expanded, folder.path, loadChildren]);
   return <>
     <div className={`pmv-tree-row ${selected === folder.path ? "is-selected" : ""}`} style={{ paddingLeft: 8 + depth * 18 }}>
       {folder.hasChildren ? <button type="button" className={`pmv-tree-expand ${expanded ? "is-open" : ""}`} onClick={() => setExpanded(value => !value)}
         aria-label={`${expanded ? "Collapse" : "Expand"} ${folder.name}`}><span className="pmv-chevron" /></button>
         : <span className="pmv-tree-spacer" />}
-      <label title={folder.path}><input type="radio" name="pmv-output-folder" checked={selected === folder.path}
+      <label title={folder.path}><input type="radio" name={radioName} checked={selected === folder.path}
         onChange={() => onSelect(folder.path)} /><svg className="pmv-folder-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.5 5.5h5l1.7 1.8h8.3v8.2H2.5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg><span>{folder.name}</span></label>
     </div>
     {expanded && (error ? <p role="alert" className="pmv-tree-hint">{error}</p> : children === null ? <small className="pmv-tree-hint">Loading folders…</small>
-      : children.length ? children.map(child => <CoveFolderNode key={child.path} folder={child} depth={depth + 1} selected={selected} onSelect={onSelect} />)
+      : children.length ? children.map(child => <FolderNode key={child.path} folder={child} depth={depth + 1} selected={selected} onSelect={onSelect} loadChildren={loadChildren} radioName={radioName} />)
         : <small className="pmv-tree-empty">No subfolders</small>)}
   </>;
 }
 
-function CoveFolderPicker({ current, onChoose, onClose }) {
+function FolderPicker({ kind, current, onChoose, onClose }) {
   const [roots, setRoots] = useState(null);
   const [selected, setSelected] = useState(current || "");
   const [error, setError] = useState("");
-  useEffect(() => { api("/scan-roots").then(setRoots).catch(e => setError(e.message)); }, []);
-  return <div className="pmv-folder-browser" role="region" aria-label="Choose Cove output folder">
-    <div className="pmv-folder-browser-head"><div><strong>Cove library folders</strong><small>Expand a library path to choose a subfolder.</small></div><button type="button" className="pmv-browser-close" onClick={onClose} aria-label="Close folder browser">×</button></div>
+  const output = kind === "outputFolder";
+  const title = output ? "Cove library folders" : kind === "musicFolder" ? "Choose music folder" : "Choose project folder";
+  const loadChildren = output ? coveFolders : filesystemFolders;
+  useEffect(() => { (output ? api("/scan-roots") : filesystemFolders()).then(setRoots).catch(e => setError(e.message)); }, [output]);
+  return <div className="pmv-folder-browser" role="region" aria-label={title}>
+    <div className="pmv-folder-browser-head"><div><strong>{title}</strong><small>{output ? "Choose a folder Cove can scan for finished videos." : "Expand a drive and choose a folder Cove can read."}</small></div><button type="button" className="pmv-browser-close" onClick={onClose} aria-label="Close folder browser">×</button></div>
     <div className="pmv-tree">{error ? <p role="alert">{error}</p> : roots === null ? <p className="pmv-tree-hint">Loading Cove folders…</p>
-      : roots.length ? roots.map(root => <CoveFolderNode key={root.path} folder={root} depth={0} selected={selected} onSelect={setSelected} />)
-        : <p className="pmv-tree-hint">No video-scanning library paths are configured in Cove.</p>}</div>
+      : roots.length ? roots.map(root => <FolderNode key={root.path} folder={root} depth={0} selected={selected} onSelect={setSelected} loadChildren={loadChildren} radioName={`pmv-${kind}`} />)
+        : <p className="pmv-tree-hint">{output ? "No video-scanning library paths are configured in Cove." : "No folders are available to Cove."}</p>}</div>
     <div className="pmv-folder-browser-foot"><div><small>Selected folder</small><span title={selected}>{selected || "Choose a folder"}</span></div><button type="button" className="pmv-button-primary" disabled={!selected} onClick={() => onChoose(selected)}>Use folder</button></div>
   </div>;
 }
@@ -196,11 +221,13 @@ function OptionForm({ options, setOptions }) {
     </div>
     <details className="pmv-advanced"><summary>Advanced edit controls</summary><div className="pmv-grid">
       {[["pacing", "Pacing"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => <RangeControl key={key} label={label} help={optionHelp[key]} lower={options[`${key}Min`] ?? 0} upper={options[`${key}Max`] ?? 0} onChange={(lower, upper) => setOptions(current => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper }))} />)}
+      <RangeControl label="Clip length (sec)" help={optionHelp.clipLength} lower={options.minClipSeconds} upper={options.maxClipSeconds} minValue={0.25} maxValue={30} step={0.25} onChange={(lower, upper) => setOptions(current => ({ ...current, minClipSeconds: lower, maxClipSeconds: upper }))} />
       {["beatAdherence", "sourceDiversity"].map(key => <Control key={key} label={key === "beatAdherence" ? "Beat adherence" : "Source diversity"} help={optionHelp[key]}>{id => <div className="pmv-range"><input id={id} type="range" min="0" max="1" step="0.05" value={options[key]} onChange={e => set(key, Number(e.target.value))} /><output>{Number(options[key]).toFixed(2)}</output></div>}</Control>)}
-      {["minClipSeconds", "maxClipSeconds", "songTrimStart", "songTrimEnd"].map((key, i) => <Control key={key} label={["Minimum clip (sec)", "Maximum clip (sec)", "Song start (sec)", "Song end (sec)"][i]} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
+      {["songTrimStart", "songTrimEnd"].map((key, i) => <Control key={key} label={["Song start (sec)", "Song end (sec)"][i]} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
       <Control label="FPS override" help={optionHelp.outputFps}>{id => <select id={id} value={options.outputFps ?? ""} onChange={e => set("outputFps", e.target.value ? Number(e.target.value) : null)}><option value="">Auto</option><option value="24">24 fps</option><option value="25">25 fps</option><option value="30">30 fps</option><option value="50">50 fps</option><option value="60">60 fps</option></select>}</Control>
       <Control label="Transitions" help={optionHelp.transitionFamilies}>{id => <select id={id} value={options.transitionFamilies?.join(",") || "cut"} onChange={e => set("transitionFamilies", e.target.value.split(","))}><option value="cut">Cuts</option><option value="cut,dissolve">Cuts and dissolves</option></select>}</Control>
       <Control label="Color treatment" help={optionHelp.colorTreatment}>{id => <select id={id} value={options.colorTreatment} onChange={e => set("colorTreatment", e.target.value)}><option value="matched">Matched</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="natural">Natural</option></select>}</Control>
+    </div><div className="pmv-form-heading"><h5>Output and Cove metadata</h5><span>03</span></div><div className="pmv-checkbox-grid">
       {[["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"], ["addAutoPmvTag", "Add Auto_PMV tag"]].map(([key, label]) => <Control key={key} label={label} help={optionHelp[key]} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options[key]} onChange={e => set(key, e.target.checked)} />}</Control>)}
     </div></details>
   </>;
@@ -221,8 +248,7 @@ export function PmvSettingsPanel() {
   const [validation, setValidation] = useState(null);
   const [mappingText, setMappingText] = useState("[]");
   const [mappingValid, setMappingValid] = useState(true);
-  const [picking, setPicking] = useState(null);
-  const [showCovePicker, setShowCovePicker] = useState(false);
+  const [browsing, setBrowsing] = useState(null);
   useEffect(() => { if (settings) setMappingText(JSON.stringify(settings.pathMappings || [], null, 2)); }, [!!settings]);
   useEffect(() => { if (settings?.companionMode === "auto") api("/local-companion").then(setLocal).catch(e => setError(e.message)); }, [settings?.companionMode]);
   useEffect(() => {
@@ -238,18 +264,9 @@ export function PmvSettingsPanel() {
   const defaults = { ...defaultOptions, ...settings.defaults };
   const automatic = settings.companionMode === "auto";
   const ready = !!settings.skipSetupChecks || !!health?.ok && validation?.state === "complete";
-  const browseFolder = async key => {
-    setPicking(key);
-    setError("");
-    try {
-      const result = await api("/pick-folder", "POST", { kind: key, initialPath: settings[key] || "" });
-      if (result.path) set(key, result.path);
-    } catch (e) { setError(e.message); }
-    finally { setPicking(null); }
-  };
+  const chooseFolder = path => { set(browsing, path); setBrowsing(null); };
   return <div className="pmv-settings">
-    <div className="pmv-settings-header"><span className="pmv-eyebrow">COVE EXTENSION</span><h3>{ready ? "Auto PMV Maker" : "Auto PMV Maker - Setup required"}</h3>
-      <p>{ready ? "Create song-led edits from your Cove library." : "Connect Resolve and check compatibility, or skip setup and configure your first PMV."}</p></div>
+    {!ready && <div className="pmv-setup-banner"><strong>Setup required</strong><p>Connect Resolve and check compatibility, or skip setup and configure your first PMV.</p></div>}
     <details className="pmv-panel pmv-checks" open={!ready}><summary>Resolve setup checks</summary>
     {!ready && <p>These checks are optional at setup. Jobs still verify Resolve and media paths before rendering.</p>}
     <div className="pmv-actions">
@@ -294,11 +311,12 @@ export function PmvSettingsPanel() {
     </section>
     <section className="pmv-panel"><div className="pmv-section-heading"><h4>Folders</h4><p>Output stays inside a Cove video library. Music and project files can live elsewhere.</p></div>
     <div className="pmv-grid">
-      <FolderSetting label="Output folder" help="Where finished MP4 files are saved. Choose a Cove video library folder so Cove can scan the result." value={settings.outputFolder} onBrowse={() => setShowCovePicker(true)} />
-      <FolderSetting label="Music folder" help="Root folder for browsing backing songs in the Create PMV popup. Subfolders can be browsed there." value={settings.musicFolder} onBrowse={() => browseFolder("musicFolder")} onClear={() => set("musicFolder", "")} loading={picking === "musicFolder"} disabled={!!picking} optional />
+      <FolderSetting label="Output folder" help="Where finished MP4 files are saved. Choose a Cove video library folder so Cove can scan the result." value={settings.outputFolder} onBrowse={() => setBrowsing("outputFolder")} />
+      <FolderSetting label="Music folder (optional)" help="Choose the folder containing your backing songs. Its subfolders appear in Create PMV. You can also upload a song in that popup without configuring this folder." value={settings.musicFolder} onBrowse={() => setBrowsing("musicFolder")} onClear={() => set("musicFolder", "")} optional />
     </div>
-    {showCovePicker && <CoveFolderPicker current={settings.outputFolder} onChoose={path => { set("outputFolder", path); setShowCovePicker(false); }} onClose={() => setShowCovePicker(false)} />}
-    <details><summary>Advanced settings</summary><div className="pmv-grid"><FolderSetting label="Project folder (optional)" help="Where exported Resolve .drp files go when Save project is enabled. Leave blank to save beside the MP4." value={settings.projectFolder} onBrowse={() => browseFolder("projectFolder")} onClear={() => set("projectFolder", "")} loading={picking === "projectFolder"} disabled={!!picking} optional /></div></details>
+    {browsing && browsing !== "projectFolder" && <FolderPicker kind={browsing} current={settings[browsing]} onChoose={chooseFolder} onClose={() => setBrowsing(null)} />}
+    <details><summary>Advanced settings</summary><div className="pmv-grid"><FolderSetting label="Project folder (optional)" help="Where exported Resolve .drp files go when Save project is enabled. Leave blank to save beside the MP4." value={settings.projectFolder} onBrowse={() => setBrowsing("projectFolder")} onClear={() => set("projectFolder", "")} optional /></div>
+      {browsing === "projectFolder" && <FolderPicker kind={browsing} current={settings.projectFolder} onChoose={chooseFolder} onClose={() => setBrowsing(null)} />}</details>
     </section>
     <section className="pmv-panel"><div className="pmv-section-heading"><h4>Job defaults</h4><p>These choices appear in each Create PMV popup and can be changed per job.</p></div><OptionForm options={defaults} setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)} /></section>
     <div className="pmv-settings-footer"><button className="pmv-button-primary" disabled={!automatic && !mappingValid} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); if (automatic) setLocal(await api("/local-companion")); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></div>
@@ -320,6 +338,8 @@ function PmvDialog({ context, close }) {
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const uploadGeneration = useRef(0);
   useEffect(() => { if (settings) setOptions({ ...defaultOptions, ...settings.defaults }); }, [settings]);
   useEffect(() => { if (audio.kind === "cove") api("/audio?q=" + encodeURIComponent(query)).then(setAudioItems).catch(e => setError(e.message)); }, [audio.kind, query]);
   useEffect(() => { if (audio.kind === "video") api("/videos?q=" + encodeURIComponent(videoQuery)).then(setVideoItems).catch(e => setError(e.message)); }, [audio.kind, videoQuery]);
@@ -328,6 +348,28 @@ function PmvDialog({ context, close }) {
     includeChildStudios: !!context.includeChildStudios, videoFilter: context.videoFilter || null,
     videoFilterExpression: context.videoFilterExpression || null, findQuery: context.findQuery || null };
   const request = { scope, audio, options };
+  const removeUpload = uploadId => { if (uploadId) api(`/uploads/${uploadId}`, "DELETE").catch(() => {}); };
+  const changeAudioKind = kind => {
+    uploadGeneration.current += 1;
+    removeUpload(audio.uploadId);
+    setUploading(false);
+    setAudio(kind === "video" && context.entityType === "video" && scope.entityIds.length === 1
+      ? { kind, coveVideoId: scope.entityIds[0] } : { kind });
+  };
+  const chooseSong = async file => {
+    if (!file) return;
+    const generation = ++uploadGeneration.current;
+    removeUpload(audio.uploadId);
+    setAudio({ kind: "upload" });
+    setUploading(true); setError("");
+    try {
+      const uploadId = await uploadSongFile(file);
+      if (generation !== uploadGeneration.current) { removeUpload(uploadId); return; }
+      setAudio({ kind: "upload", uploadId, name: file.name });
+    } catch (e) { if (generation === uploadGeneration.current) setError(e.message); }
+    finally { if (generation === uploadGeneration.current) setUploading(false); }
+  };
+  const cancel = () => { uploadGeneration.current += 1; removeUpload(audio.uploadId); close(); };
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => api("/preview", "POST", request)
@@ -340,12 +382,12 @@ function PmvDialog({ context, close }) {
     window.alert(`PMV queued. Job: ${result.jobId}`); close();
   } catch (e) { setError(e.message); } finally { setBusy(false); } };
   return <div className="pmv-overlay" role="dialog" aria-modal="true" aria-label="Create PMV"><div className="pmv-dialog">
-    <header><h2>Create PMV</h2><button onClick={close} aria-label="Close">×</button></header>
+    <header><h2>Create PMV</h2><button onClick={cancel} aria-label="Close">×</button></header>
     <p>{preview ? `${preview.eligibleCount} eligible sources · ${preview.proposedFilename}` : "Checking sources…"}</p>
     {!!preview?.exclusions?.length && <details><summary>{preview.exclusions.length} excluded sources</summary><ul>{preview.exclusions.map((x, i) => <li key={i}>{x}</li>)}</ul></details>}
     <fieldset><legend>Backing audio</legend><div className="pmv-grid">
-      <Control label="Source" help="Choose a backing song from Cove, the configured music folder, YouTube, or a Cove video's audio.">{id => <select id={id} value={audio.kind} onChange={e => setAudio(e.target.value === "video" && context.entityType === "video" && scope.entityIds.length === 1
-        ? { kind: "video", coveVideoId: scope.entityIds[0] } : { kind: e.target.value })}><option value="cove">Cove audio</option><option value="folder">Music folder</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control>
+      <Control label="Source" help="Choose a backing song from Cove, the music folder, a local song file, YouTube, or a Cove video's audio.">{id => <select id={id} value={audio.kind} onChange={e => changeAudioKind(e.target.value)}><option value="cove">Cove audio</option><option value="folder">Music folder</option><option value="upload">Choose song file</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control>
+      {audio.kind === "upload" && <Control label="Song file" help="Upload an audio file directly from your computer. The companion stores it temporarily and removes it after the PMV job.">{id => <><input id={id} type="file" accept=".mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.aiff,audio/*" onChange={e => chooseSong(e.target.files?.[0])} /><small>{uploading ? "Uploading song…" : audio.uploadId ? `${audio.name} ready` : "Choose an audio file up to 200 MB."}</small></>}</Control>}
       {audio.kind === "cove" && <><Control label="Search" help="Filter Cove's audio library by title.">{id => <input id={id} value={query} onChange={e => setQuery(e.target.value)} />}</Control><Control label="Track" help="The Cove audio record used as the backing song.">{id => <select id={id} value={audio.coveAudioId || ""} onChange={e => setAudio({ kind: "cove", coveAudioId: Number(e.target.value) })}><option value="">Choose track</option>{audioItems.map(x => <option value={x.id} key={x.id}>{x.title || x.minPath}</option>)}</select>}</Control></>}
       {audio.kind === "folder" && <><Control label="Folder" help="Browse subfolders of the music folder set in Auto PMV Maker settings. Choose an audio file below.">{id => <div className="pmv-folder-row"><input id={id} readOnly value={folderPath || "Music folder"} /><button type="button" disabled={!folderPath} onClick={() => setFolderPath(folderPath.split(/[\\/]/).slice(0, -1).join("/"))}>Up</button></div>}</Control><div className="pmv-file-list">{folderItems.map(x => <button type="button" key={x.path} onClick={() => x.kind === "folder" ? setFolderPath(x.path) : setAudio({ kind: "folder", path: x.path })}>{x.kind === "folder" ? "📁" : "♫"} {x.name}</button>)}</div><p>{audio.path || "Choose a file"}</p></>}
       {audio.kind === "youtube" && <Control label="YouTube URL" help="Paste an HTTPS YouTube video URL. The companion downloads only its audio for the PMV.">{id => <input id={id} type="url" value={audio.url || ""} onChange={e => setAudio({ kind: "youtube", url: e.target.value })} />}</Control>}
@@ -353,7 +395,7 @@ function PmvDialog({ context, close }) {
     </div></fieldset>
     <OptionForm options={options} setOptions={setOptions} />
     {(error || settingsError) && <p role="alert">{error || settingsError}</p>}
-    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={close}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || !preview?.eligibleCount} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
+    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={cancel}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || uploading || audio.kind === "upload" && !audio.uploadId || !preview?.eligibleCount} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
   </div></div>;
 }
 

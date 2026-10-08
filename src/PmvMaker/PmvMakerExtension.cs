@@ -9,6 +9,7 @@ using Cove.Plugins;
 using Cove.Sdk;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +20,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 {
     public const string ExtensionId = "io.github.jiwenjimiran.auto-pmv-maker";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly HashSet<string> AudioUploadExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff" };
+    private const long MaxAudioUploadBytes = 200L * 1024 * 1024;
     private IExtensionStore? _store;
     private IExtensionServiceScopeFactory? _scopes;
     private LocalCompanion? _local;
@@ -26,7 +30,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.9";
+    public string Version => "0.1.10";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -80,6 +84,88 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 .ToArray() ?? [];
             return Task.FromResult<IResult>(Results.Json(roots, Json));
         }).RequireCovePermission("system.settings.write");
+        MapGetResult(endpoints, "/api/ext/pmv/folders", (HttpContext ctx) =>
+        {
+            try
+            {
+                var requested = ctx.Request.Query["path"].ToString();
+                if (string.IsNullOrWhiteSpace(requested))
+                {
+                    var drives = DriveInfo.GetDrives().Where(drive => Directory.Exists(drive.RootDirectory.FullName))
+                        .Select(drive => new { name = drive.RootDirectory.FullName, path = drive.RootDirectory.FullName, hasChildren = true })
+                        .ToArray();
+                    return Task.FromResult<IResult>(Results.Json(drives, Json));
+                }
+                var full = Path.GetFullPath(requested);
+                if (!Path.IsPathRooted(requested) || !Directory.Exists(full))
+                    return Task.FromResult<IResult>(Results.BadRequest(new { message = "That folder is unavailable to Cove." }));
+                var folders = Directory.EnumerateDirectories(full)
+                    .Select(path => new { name = Path.GetFileName(Path.TrimEndingDirectorySeparator(path)), path, hasChildren = true })
+                    .OrderBy(folder => folder.name, StringComparer.OrdinalIgnoreCase).ToArray();
+                return Task.FromResult<IResult>(Results.Json(folders, Json));
+            }
+            catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+            {
+                return Task.FromResult<IResult>(Results.BadRequest(new { message = "Cove cannot browse this folder: " + ex.Message }));
+            }
+        }).RequireCovePermission("system.settings.write");
+        MapPostResult(endpoints, "/api/ext/pmv/upload-audio", async (HttpContext ctx) =>
+        {
+            var extension = ctx.Request.Headers["X-PMV-Extension"].ToString().ToLowerInvariant();
+            if (!AudioUploadExtensions.Contains(extension) || ctx.Request.ContentLength > MaxAudioUploadBytes)
+                return Results.BadRequest(new { message = "Choose an audio file under 200 MB (MP3, WAV, FLAC, M4A, AAC, OGG, OPUS, or AIFF)." });
+            var sizeFeature = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+            if (sizeFeature is { IsReadOnly: false }) sizeFeature.MaxRequestBodySize = MaxAudioUploadBytes;
+            var temp = Path.Combine(Path.GetTempPath(), "pmvmaker-song-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                long length = 0;
+                await using (var file = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    var buffer = new byte[1024 * 1024];
+                    int read;
+                    while ((read = await ctx.Request.Body.ReadAsync(buffer, ctx.RequestAborted)) > 0)
+                    {
+                        length += read;
+                        if (length > MaxAudioUploadBytes)
+                            return Results.BadRequest(new { message = "The song file is larger than 200 MB." });
+                        await file.WriteAsync(buffer.AsMemory(0, read), ctx.RequestAborted);
+                    }
+                }
+                if (length == 0) return Results.BadRequest(new { message = "Choose an audio file first." });
+                var settings = await EffectiveSettingsAsync(ctx.RequestAborted);
+                using var post = NewRequest(HttpMethod.Post, settings, "uploads");
+                post.Headers.TryAddWithoutValidation("X-PMV-Extension", extension);
+                post.Content = new StreamContent(File.OpenRead(temp));
+                post.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                post.Content.Headers.ContentLength = length;
+                using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+                using var response = await client.SendAsync(post, ctx.RequestAborted);
+                var result = await response.Content.ReadFromJsonAsync<JsonElement>(Json, ctx.RequestAborted);
+                if (!response.IsSuccessStatusCode)
+                    return Results.BadRequest(new { message = result.TryGetProperty("message", out var error)
+                        ? error.GetString() : "The companion could not read this song." });
+                return Results.Json(result, Json);
+            }
+            catch (Exception ex) when (ex is IOException or HttpRequestException or InvalidOperationException)
+            {
+                return Results.BadRequest(new { message = "Song upload failed: " + ex.Message });
+            }
+            finally { File.Delete(temp); }
+        }).RequireCovePermission("videos.read").RequireCovePermission("jobs.run");
+        MapDeleteResult(endpoints, "/api/ext/pmv/uploads/{id}", async (HttpContext ctx) =>
+        {
+            var id = ctx.Request.RouteValues["id"]?.ToString() ?? "";
+            if (!Guid.TryParseExact(id, "N", out _)) return Results.BadRequest(new { message = "Invalid uploaded song ID." });
+            try
+            {
+                using var request = NewRequest(HttpMethod.Delete, await EffectiveSettingsAsync(ctx.RequestAborted), "uploads/" + id);
+                using var response = await _http.SendAsync(request, ctx.RequestAborted);
+                response.EnsureSuccessStatusCode();
+                return Results.Json(new { deleted = true }, Json);
+            }
+            catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
+        }).RequireCovePermission("videos.read").RequireCovePermission("jobs.run");
         MapGetResult(endpoints, "/api/ext/pmv/local-companion", async (HttpContext ctx) =>
         {
             var settings = await SettingsAsync(ctx.RequestAborted);
@@ -295,6 +381,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private static RouteHandlerBuilder MapPostResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
         => endpoints.MapPost(pattern, (Delegate)handler);
 
+    private static RouteHandlerBuilder MapDeleteResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
+        => endpoints.MapDelete(pattern, (Delegate)handler);
+
     private static HttpContent JsonBody<T>(T value)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(value, Json);
@@ -372,6 +461,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             throw new UnauthorizedAccessException("Backing Cove video is not accessible.");
         if (audio.Kind == "folder" && !authorization.Has(principal, "files.read"))
             throw new UnauthorizedAccessException("Music folder access requires files.read.");
+        if (audio.Kind == "upload")
+        {
+            if (!Guid.TryParseExact(audio.UploadId, "N", out _))
+                throw new ArgumentException("Choose a song file to upload.");
+            return new { kind = "upload", uploadId = audio.UploadId };
+        }
         if (audio.Kind == "youtube")
         {
             if (!Uri.TryCreate(audio.Url, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||

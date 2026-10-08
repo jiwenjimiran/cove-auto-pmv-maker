@@ -11,27 +11,26 @@
   color: var(--pmv-text);
 }
 .pmv-settings {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 20px 18px 36px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 6px 0 24px;
 }
-.pmv-settings-header {
-  padding: 8px 2px 20px;
-  border-bottom: 1px solid var(--pmv-border);
+.pmv-setup-banner {
+  margin-bottom: 14px;
+  padding: 12px 15px;
+  border-left: 3px solid var(--pmv-accent);
+  border-radius: 0 9px 9px 0;
+  background: var(--pmv-surface);
 }
-.pmv-eyebrow {
-  color: var(--pmv-accent);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .16em;
+.pmv-setup-banner strong {
+  font-size: 13px;
 }
-.pmv-settings-header h3 {
-  margin: 5px 0 4px;
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -.035em;
+.pmv-setup-banner p {
+  margin: 4px 0 0;
+  color: var(--pmv-muted);
+  font-size: 12px;
 }
-.pmv-settings-header p,
 .pmv-section-heading p {
   margin: 0;
   color: var(--pmv-muted);
@@ -139,6 +138,11 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
   gap: 8px 18px;
+}
+.pmv-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px 14px;
 }
 .pmv-control {
   display: flex;
@@ -346,6 +350,9 @@
 .pmv-toggle .pmv-control-heading {
   min-width: 0;
 }
+.pmv-toggle .pmv-control-heading label {
+  white-space: nowrap;
+}
 .pmv-toggle input {
   order: 2;
   margin: 0;
@@ -551,13 +558,16 @@
 }
 @media (max-width: 640px) {
   .pmv-settings {
-    padding: 15px 10px 30px;
+    padding: 4px 0 24px;
   }
   .pmv-panel {
     padding: 15px;
   }
   .pmv-dialog {
     padding: 18px;
+  }
+  .pmv-checkbox-grid {
+    grid-template-columns: 1fr;
   }
   .pmv-folder-browser-foot {
     align-items: stretch;
