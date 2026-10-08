@@ -64,14 +64,14 @@ function openPmv(_action, payload) {
   return { cancelled: true };
 }
 var styleHelp = {
-  "rhythmic-polish": "Precise cuts, restrained accents, and matched color.",
+  "rhythmic-polish": "Precise cuts and restrained accents.",
   "high-energy": "Faster cuts, stronger motion, and controlled accents.",
-  cinematic: "Longer shots, softer pacing, and cohesive color."
+  cinematic: "Longer shots and softer pacing."
 };
 var stylePresets = {
-  "rhythmic-polish": { motionIntensityMin: 0.15, motionIntensityMax: 0.35, transitionIntensityMin: 0.15, transitionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "matched" },
-  "high-energy": { motionIntensityMin: 0.5, motionIntensityMax: 0.8, transitionIntensityMin: 0.2, transitionIntensityMax: 0.5, flashIntensityMin: 0.2, flashIntensityMax: 0.45, glitchIntensityMin: 0.15, glitchIntensityMax: 0.35, colorTreatment: "matched" },
-  cinematic: { motionIntensityMin: 0.1, motionIntensityMax: 0.3, transitionIntensityMin: 0.35, transitionIntensityMax: 0.65, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "warm" }
+  "rhythmic-polish": { motionIntensityMin: 0.15, motionIntensityMax: 0.35, transitionIntensityMin: 0.15, transitionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0 },
+  "high-energy": { motionIntensityMin: 0.5, motionIntensityMax: 0.8, transitionIntensityMin: 0.2, transitionIntensityMax: 0.5, flashIntensityMin: 0.2, flashIntensityMax: 0.45, glitchIntensityMin: 0.15, glitchIntensityMax: 0.35 },
+  cinematic: { motionIntensityMin: 0.1, motionIntensityMax: 0.3, transitionIntensityMin: 0.35, transitionIntensityMax: 0.65, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0 }
 };
 var optionHelp = {
   layout: "Three portrait panes arrange three clips side by side. Full screen shows one clip. The frame follows a common source aspect ratio when possible.",
@@ -94,7 +94,7 @@ var optionHelp = {
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
   outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
-  colorTreatment: "Matched balances source brightness; Warm and Cool add subtle color shifts; Natural leaves color alone.",
+  colorTreatment: "None leaves source colors alone. Match brightness samples the first two seconds of each used video. Warm and Cool apply subtle color shifts.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
   scanToCove: "Imports the finished MP4 into Cove after Resolve renders it.",
   keepPerformers: "Adds performers linked to footage that actually appears in the finished PMV.",
@@ -237,7 +237,7 @@ var defaultOptions = {
   flashIntensityMax: 0,
   glitchIntensityMin: 0,
   glitchIntensityMax: 0,
-  colorTreatment: "matched",
+  colorTreatment: "natural",
   songTrimStart: null,
   songTrimEnd: null,
   outputFps: null,
@@ -250,7 +250,7 @@ var defaultOptions = {
 };
 function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "pmv-form-heading" }, /* @__PURE__ */ React.createElement("h5", null, "Layout settings"), /* @__PURE__ */ React.createElement("span", null, "01")), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Layout", help: optionHelp.layout }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.layout, onChange: (e) => set("layout", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "three-pane" }, "Three portrait panes"), /* @__PURE__ */ React.createElement("option", { value: "full-screen" }, "Full screen"))), options.layout === "three-pane" && /* @__PURE__ */ React.createElement(Control, { label: "Use vertical videos only", help: optionHelp.useVerticalVideosOnly, className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: !!options.useVerticalVideosOnly, onChange: (e) => set("useVerticalVideosOnly", e.target.checked) })), options.layout === "three-pane" && !options.useVerticalVideosOnly && /* @__PURE__ */ React.createElement(Control, { label: "Selection mode", help: optionHelp.selectionMode }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.selectionMode || "center", onChange: (e) => set("selectionMode", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "random" }, "Random slice"), /* @__PURE__ */ React.createElement("option", { value: "center" }, "Center slice"), /* @__PURE__ */ React.createElement("option", { value: "face" }, "Face slice"))), options.layout === "three-pane" && !options.useVerticalVideosOnly && options.selectionMode === "face" && /* @__PURE__ */ React.createElement(Control, { label: "Keep face centered", help: optionHelp.keepFaceCentered, className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: options.keepFaceCentered !== false, onChange: (e) => set("keepFaceCentered", e.target.checked) }))), /* @__PURE__ */ React.createElement("div", { className: "pmv-form-heading" }, /* @__PURE__ */ React.createElement("h5", null, "Creative direction"), /* @__PURE__ */ React.createElement("span", null, "02")), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Style", help: optionHelp.style }, (id) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("select", { id, value: options.style, onChange: (e) => setOptions((current) => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] })) }, Object.keys(styleHelp).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x.replaceAll("-", " ")))), /* @__PURE__ */ React.createElement("small", null, styleHelp[options.style]))), /* @__PURE__ */ React.createElement(Control, { label: "Source audio", help: optionHelp.sourceAudio }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.sourceAudio, onChange: (e) => set("sourceAudio", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "muted" }, "Muted"), /* @__PURE__ */ React.createElement("option", { value: "mixed" }, "Mixed \xB7 brief accents"), /* @__PURE__ */ React.createElement("option", { value: "all" }, "All source audio")))), /* @__PURE__ */ React.createElement("details", { className: "pmv-advanced" }, /* @__PURE__ */ React.createElement("summary", null, "Advanced edit controls"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["pacing", "Pacing"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => /* @__PURE__ */ React.createElement(RangeControl, { key, label, help: optionHelp[key], lower: options[`${key}Min`] ?? 0, upper: options[`${key}Max`] ?? 0, onChange: (lower, upper) => setOptions((current) => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper })) })), /* @__PURE__ */ React.createElement(RangeControl, { label: "Clip length (sec)", help: optionHelp.clipLength, lower: options.minClipSeconds, upper: options.maxClipSeconds, minValue: 0.25, maxValue: 30, step: 0.25, onChange: (lower, upper) => setOptions((current) => ({ ...current, minClipSeconds: lower, maxClipSeconds: upper })) }), ["beatAdherence", "sourceDiversity"].map((key) => /* @__PURE__ */ React.createElement(Control, { key, label: key === "beatAdherence" ? "Beat adherence" : "Source diversity", help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("div", { className: "pmv-range" }, /* @__PURE__ */ React.createElement("input", { id, type: "range", min: "0", max: "1", step: "0.05", value: options[key], onChange: (e) => set(key, Number(e.target.value)) }), /* @__PURE__ */ React.createElement("output", null, Number(options[key]).toFixed(2))))), ["songTrimStart", "songTrimEnd"].map((key, i) => /* @__PURE__ */ React.createElement(Control, { key, label: ["Song start (sec)", "Song end (sec)"][i], help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "number", min: "0", step: "any", value: options[key] ?? "", onChange: (e) => set(key, e.target.value === "" ? null : Number(e.target.value)) }))), /* @__PURE__ */ React.createElement(Control, { label: "FPS override", help: optionHelp.outputFps }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.outputFps ?? "", onChange: (e) => set("outputFps", e.target.value ? Number(e.target.value) : null) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Auto"), /* @__PURE__ */ React.createElement("option", { value: "24" }, "24 fps"), /* @__PURE__ */ React.createElement("option", { value: "25" }, "25 fps"), /* @__PURE__ */ React.createElement("option", { value: "30" }, "30 fps"), /* @__PURE__ */ React.createElement("option", { value: "50" }, "50 fps"), /* @__PURE__ */ React.createElement("option", { value: "60" }, "60 fps"))), /* @__PURE__ */ React.createElement(Control, { label: "Transitions", help: optionHelp.transitionFamilies }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.transitionFamilies?.join(",") || "cut", onChange: (e) => set("transitionFamilies", e.target.value.split(",")) }, /* @__PURE__ */ React.createElement("option", { value: "cut" }, "Cuts"), /* @__PURE__ */ React.createElement("option", { value: "cut,dissolve" }, "Cuts and dissolves"))), /* @__PURE__ */ React.createElement(Control, { label: "Color treatment", help: optionHelp.colorTreatment }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.colorTreatment, onChange: (e) => set("colorTreatment", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "matched" }, "Matched"), /* @__PURE__ */ React.createElement("option", { value: "warm" }, "Warm"), /* @__PURE__ */ React.createElement("option", { value: "cool" }, "Cool"), /* @__PURE__ */ React.createElement("option", { value: "natural" }, "Natural")))), /* @__PURE__ */ React.createElement("div", { className: "pmv-form-heading" }, /* @__PURE__ */ React.createElement("h5", null, "Output and Cove metadata"), /* @__PURE__ */ React.createElement("span", null, "03")), /* @__PURE__ */ React.createElement("div", { className: "pmv-checkbox-grid" }, [["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"], ["addAutoPmvTag", "Add Auto_PMV tag"]].map(([key, label]) => /* @__PURE__ */ React.createElement(Control, { key, label, help: optionHelp[key], className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: !!options[key], onChange: (e) => set(key, e.target.checked) }))))));
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "pmv-form-heading" }, /* @__PURE__ */ React.createElement("h5", null, "Layout settings"), /* @__PURE__ */ React.createElement("span", null, "01")), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Layout", help: optionHelp.layout }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.layout, onChange: (e) => set("layout", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "three-pane" }, "Three portrait panes"), /* @__PURE__ */ React.createElement("option", { value: "full-screen" }, "Full screen"))), options.layout === "three-pane" && /* @__PURE__ */ React.createElement(Control, { label: "Use vertical videos only", help: optionHelp.useVerticalVideosOnly, className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: !!options.useVerticalVideosOnly, onChange: (e) => set("useVerticalVideosOnly", e.target.checked) })), options.layout === "three-pane" && !options.useVerticalVideosOnly && /* @__PURE__ */ React.createElement(Control, { label: "Selection mode", help: optionHelp.selectionMode }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.selectionMode || "center", onChange: (e) => set("selectionMode", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "random" }, "Random slice"), /* @__PURE__ */ React.createElement("option", { value: "center" }, "Center slice"), /* @__PURE__ */ React.createElement("option", { value: "face" }, "Face slice"))), options.layout === "three-pane" && !options.useVerticalVideosOnly && options.selectionMode === "face" && /* @__PURE__ */ React.createElement(Control, { label: "Keep face centered", help: optionHelp.keepFaceCentered, className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: options.keepFaceCentered !== false, onChange: (e) => set("keepFaceCentered", e.target.checked) }))), /* @__PURE__ */ React.createElement("div", { className: "pmv-form-heading" }, /* @__PURE__ */ React.createElement("h5", null, "Creative direction"), /* @__PURE__ */ React.createElement("span", null, "02")), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Style", help: optionHelp.style }, (id) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("select", { id, value: options.style, onChange: (e) => setOptions((current) => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] })) }, Object.keys(styleHelp).map((x) => /* @__PURE__ */ React.createElement("option", { key: x, value: x }, x.replaceAll("-", " ")))), /* @__PURE__ */ React.createElement("small", null, styleHelp[options.style]))), /* @__PURE__ */ React.createElement(Control, { label: "Source audio", help: optionHelp.sourceAudio }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.sourceAudio, onChange: (e) => set("sourceAudio", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "muted" }, "Muted"), /* @__PURE__ */ React.createElement("option", { value: "mixed" }, "Mixed \xB7 brief accents"), /* @__PURE__ */ React.createElement("option", { value: "all" }, "All source audio")))), /* @__PURE__ */ React.createElement("details", { className: "pmv-advanced" }, /* @__PURE__ */ React.createElement("summary", null, "Advanced edit controls"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["pacing", "Pacing"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => /* @__PURE__ */ React.createElement(RangeControl, { key, label, help: optionHelp[key], lower: options[`${key}Min`] ?? 0, upper: options[`${key}Max`] ?? 0, onChange: (lower, upper) => setOptions((current) => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper })) })), /* @__PURE__ */ React.createElement(RangeControl, { label: "Clip length (sec)", help: optionHelp.clipLength, lower: options.minClipSeconds, upper: options.maxClipSeconds, minValue: 0.25, maxValue: 30, step: 0.25, onChange: (lower, upper) => setOptions((current) => ({ ...current, minClipSeconds: lower, maxClipSeconds: upper })) }), ["beatAdherence", "sourceDiversity"].map((key) => /* @__PURE__ */ React.createElement(Control, { key, label: key === "beatAdherence" ? "Beat adherence" : "Source diversity", help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("div", { className: "pmv-range" }, /* @__PURE__ */ React.createElement("input", { id, type: "range", min: "0", max: "1", step: "0.05", value: options[key], onChange: (e) => set(key, Number(e.target.value)) }), /* @__PURE__ */ React.createElement("output", null, Number(options[key]).toFixed(2))))), ["songTrimStart", "songTrimEnd"].map((key, i) => /* @__PURE__ */ React.createElement(Control, { key, label: ["Song start (sec)", "Song end (sec)"][i], help: optionHelp[key] }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "number", min: "0", step: "any", value: options[key] ?? "", onChange: (e) => set(key, e.target.value === "" ? null : Number(e.target.value)) }))), /* @__PURE__ */ React.createElement(Control, { label: "FPS override", help: optionHelp.outputFps }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.outputFps ?? "", onChange: (e) => set("outputFps", e.target.value ? Number(e.target.value) : null) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Auto"), /* @__PURE__ */ React.createElement("option", { value: "24" }, "24 fps"), /* @__PURE__ */ React.createElement("option", { value: "25" }, "25 fps"), /* @__PURE__ */ React.createElement("option", { value: "30" }, "30 fps"), /* @__PURE__ */ React.createElement("option", { value: "50" }, "50 fps"), /* @__PURE__ */ React.createElement("option", { value: "60" }, "60 fps"))), /* @__PURE__ */ React.createElement(Control, { label: "Transitions", help: optionHelp.transitionFamilies }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.transitionFamilies?.join(",") || "cut", onChange: (e) => set("transitionFamilies", e.target.value.split(",")) }, /* @__PURE__ */ React.createElement("option", { value: "cut" }, "Cuts"), /* @__PURE__ */ React.createElement("option", { value: "cut,dissolve" }, "Cuts and dissolves"))), /* @__PURE__ */ React.createElement(Control, { label: "Color matching", help: optionHelp.colorTreatment }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: options.colorTreatment, onChange: (e) => set("colorTreatment", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "natural" }, "None"), /* @__PURE__ */ React.createElement("option", { value: "matched" }, "Match brightness"), /* @__PURE__ */ React.createElement("option", { value: "warm" }, "Warm"), /* @__PURE__ */ React.createElement("option", { value: "cool" }, "Cool")))), /* @__PURE__ */ React.createElement("div", { className: "pmv-form-heading" }, /* @__PURE__ */ React.createElement("h5", null, "Output and Cove metadata"), /* @__PURE__ */ React.createElement("span", null, "03")), /* @__PURE__ */ React.createElement("div", { className: "pmv-checkbox-grid" }, [["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"], ["addAutoPmvTag", "Add Auto_PMV tag"]].map(([key, label]) => /* @__PURE__ */ React.createElement(Control, { key, label, help: optionHelp[key], className: "pmv-toggle" }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "checkbox", checked: !!options[key], onChange: (e) => set(key, e.target.checked) }))))));
 }
 function useSettings(path = "/settings") {
   const [settings, setSettings] = useState(null);
@@ -369,16 +369,93 @@ function PmvSettingsPanel() {
     }
   } }, "Save settings"))), error && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error), message && /* @__PURE__ */ React.createElement("p", { role: "status" }, message));
 }
+function TrackRow({ name, selected, playing, onSelect, onPreview, depth = 0 }) {
+  return /* @__PURE__ */ React.createElement("div", { className: `pmv-track-row ${selected ? "is-selected" : ""}`, style: { paddingLeft: 8 + depth * 18 } }, /* @__PURE__ */ React.createElement("button", { type: "button", className: "pmv-track-select", onClick: onSelect, title: name, "aria-pressed": selected }, "\u266B ", /* @__PURE__ */ React.createElement("span", null, name)), /* @__PURE__ */ React.createElement("button", { type: "button", className: "pmv-track-play", onClick: onPreview, title: `${playing ? "Pause" : "Play"} ${name}`, "aria-label": `${playing ? "Pause" : "Play"} ${name}` }, playing ? "\u2161" : "\u25B6"));
+}
+function MusicNode({ item, depth, selectedPath, playingUrl, onSelect, onPreview }) {
+  const [open, setOpen] = useState(false);
+  const [children, setChildren] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open || children !== null) return;
+    let active = true;
+    api(`/music?path=${encodeURIComponent(item.path)}`).then((rows) => {
+      if (active) setChildren(rows);
+    }).catch((e) => {
+      if (active) setError(e.message);
+    });
+    return () => {
+      active = false;
+    };
+  }, [open, item.path, children]);
+  if (item.kind === "file") {
+    const url = `/api/ext/pmv/music-preview?path=${encodeURIComponent(item.path)}`;
+    return /* @__PURE__ */ React.createElement(
+      TrackRow,
+      {
+        name: item.name,
+        depth,
+        selected: selectedPath === item.path,
+        playing: playingUrl === url,
+        onSelect: () => onSelect(item.path),
+        onPreview: () => onPreview(url)
+      }
+    );
+  }
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { className: "pmv-music-folder", style: { paddingLeft: 8 + depth * 18 } }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setOpen((value) => !value), "aria-expanded": open, title: item.path }, /* @__PURE__ */ React.createElement("span", { className: `pmv-chevron ${open ? "is-open" : ""}` }), " ", /* @__PURE__ */ React.createElement("span", null, "\u25B8"), " ", item.name)), open && (error ? /* @__PURE__ */ React.createElement("p", { role: "alert", className: "pmv-tree-hint" }, error) : children === null ? /* @__PURE__ */ React.createElement("small", { className: "pmv-tree-hint" }, "Loading tracks\u2026") : children.length ? children.map((child) => /* @__PURE__ */ React.createElement(
+    MusicNode,
+    {
+      key: child.path,
+      item: child,
+      depth: depth + 1,
+      selectedPath,
+      playingUrl,
+      onSelect,
+      onPreview
+    }
+  )) : /* @__PURE__ */ React.createElement("small", { className: "pmv-tree-empty" }, "Empty folder")));
+}
+function MusicTree({ selectedPath, playingUrl, onSelect, onPreview }) {
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    api("/music").then((rows) => {
+      if (active) setItems(rows);
+    }).catch((e) => {
+      if (active) setError(e.message);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  return /* @__PURE__ */ React.createElement("div", { className: "pmv-track-browser" }, /* @__PURE__ */ React.createElement("div", { className: "pmv-track-browser-head" }, /* @__PURE__ */ React.createElement("strong", null, "Music folder"), /* @__PURE__ */ React.createElement("small", null, "Choose a song; use Play to listen first.")), /* @__PURE__ */ React.createElement("div", { className: "pmv-track-list", role: "region", "aria-label": "Music folder tracks" }, error ? /* @__PURE__ */ React.createElement("p", { role: "alert", className: "pmv-tree-hint" }, error) : items === null ? /* @__PURE__ */ React.createElement("p", { className: "pmv-tree-hint" }, "Loading music folder\u2026") : items.length ? items.map((item) => /* @__PURE__ */ React.createElement(
+    MusicNode,
+    {
+      key: item.path,
+      item,
+      depth: 0,
+      selectedPath,
+      playingUrl,
+      onSelect,
+      onPreview
+    }
+  )) : /* @__PURE__ */ React.createElement("p", { className: "pmv-tree-hint" }, "No songs in this folder.")));
+}
 function PmvDialog({ context, close }) {
   const [settings, , settingsError] = useSettings("/defaults");
   const [options, setOptions] = useState(defaultOptions);
   const [audio, setAudio] = useState({ kind: "cove" });
   const [query, setQuery] = useState("");
   const [audioItems, setAudioItems] = useState([]);
+  const [selectedAudioName, setSelectedAudioName] = useState("");
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState("");
   const [videoItems, setVideoItems] = useState([]);
   const [videoQuery, setVideoQuery] = useState("");
-  const [folderItems, setFolderItems] = useState([]);
-  const [folderPath, setFolderPath] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [playingUrl, setPlayingUrl] = useState("");
+  const audioPlayer = useRef(null);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -388,14 +465,28 @@ function PmvDialog({ context, close }) {
     if (settings) setOptions({ ...defaultOptions, ...settings.defaults });
   }, [settings]);
   useEffect(() => {
-    if (audio.kind === "cove") api("/audio?q=" + encodeURIComponent(query)).then(setAudioItems).catch((e) => setError(e.message));
+    if (audio.kind !== "cove") return;
+    let active = true;
+    setAudioLoading(true);
+    setAudioError("");
+    const timer = window.setTimeout(() => api("/audio?q=" + encodeURIComponent(query)).then((rows) => {
+      if (active) setAudioItems(rows);
+    }).catch((e) => {
+      if (active) {
+        setAudioItems([]);
+        setAudioError(e.message.includes("403") ? "Cove denied audio access. Your account needs Audios read permission." : e.message);
+      }
+    }).finally(() => {
+      if (active) setAudioLoading(false);
+    }), 250);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [audio.kind, query]);
   useEffect(() => {
     if (audio.kind === "video") api("/videos?q=" + encodeURIComponent(videoQuery)).then(setVideoItems).catch((e) => setError(e.message));
   }, [audio.kind, videoQuery]);
-  useEffect(() => {
-    if (audio.kind === "folder") api("/music?path=" + encodeURIComponent(folderPath)).then(setFolderItems).catch((e) => setError(e.message));
-  }, [audio.kind, folderPath]);
   const scope = {
     entityType: context.entityType,
     entityIds: context.entityIds || context.selectedIds,
@@ -405,13 +496,33 @@ function PmvDialog({ context, close }) {
     findQuery: context.findQuery || null
   };
   const request = { scope, audio, options };
+  const audioReady = audio.kind === "cove" ? Number(audio.coveAudioId) > 0 : audio.kind === "folder" ? !!audio.path : audio.kind === "upload" ? !!audio.uploadId : audio.kind === "video" ? Number(audio.coveVideoId) > 0 : audio.kind === "youtube" && /^https:\/\//i.test(audio.url || "");
   const removeUpload = (uploadId) => {
     if (uploadId) api(`/uploads/${uploadId}`, "DELETE").catch(() => {
     });
   };
+  const playPreview = (url) => {
+    const player = audioPlayer.current;
+    if (!player) return;
+    if (playingUrl === url && !player.paused) {
+      player.pause();
+      setPlayingUrl("");
+      return;
+    }
+    if (previewUrl !== url) {
+      player.src = url;
+      setPreviewUrl(url);
+    }
+    setError("");
+    player.play().then(() => setPlayingUrl(url)).catch(() => setError("Could not play this track in the browser."));
+  };
   const changeAudioKind = (kind) => {
     uploadGeneration.current += 1;
     removeUpload(audio.uploadId);
+    setSelectedAudioName("");
+    audioPlayer.current?.pause();
+    setPreviewUrl("");
+    setPlayingUrl("");
     setUploading(false);
     setAudio(kind === "video" && context.entityType === "video" && scope.entityIds.length === 1 ? { kind, coveVideoId: scope.entityIds[0] } : { kind });
   };
@@ -438,6 +549,7 @@ function PmvDialog({ context, close }) {
   const cancel = () => {
     uploadGeneration.current += 1;
     removeUpload(audio.uploadId);
+    audioPlayer.current?.pause();
     close();
   };
   useEffect(() => {
@@ -453,11 +565,15 @@ function PmvDialog({ context, close }) {
     };
   }, [JSON.stringify(scope), JSON.stringify(options)]);
   const create = async () => {
+    if (!audioReady) {
+      setError("Choose a backing track before creating the PMV.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      const result = await api("/create", "POST", request);
-      window.alert(`PMV queued. Job: ${result.jobId}`);
+      await api("/create", "POST", request);
+      audioPlayer.current?.pause();
       close();
     } catch (e) {
       setError(e.message);
@@ -465,7 +581,45 @@ function PmvDialog({ context, close }) {
       setBusy(false);
     }
   };
-  return /* @__PURE__ */ React.createElement("div", { className: "pmv-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Create PMV" }, /* @__PURE__ */ React.createElement("div", { className: "pmv-dialog" }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("h2", null, "Create PMV"), /* @__PURE__ */ React.createElement("button", { onClick: cancel, "aria-label": "Close" }, "\xD7")), /* @__PURE__ */ React.createElement("p", null, preview ? `${preview.eligibleCount} eligible sources \xB7 ${preview.proposedFilename}` : "Checking sources\u2026"), !!preview?.exclusions?.length && /* @__PURE__ */ React.createElement("details", null, /* @__PURE__ */ React.createElement("summary", null, preview.exclusions.length, " excluded sources"), /* @__PURE__ */ React.createElement("ul", null, preview.exclusions.map((x, i) => /* @__PURE__ */ React.createElement("li", { key: i }, x)))), /* @__PURE__ */ React.createElement("fieldset", null, /* @__PURE__ */ React.createElement("legend", null, "Backing audio"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Source", help: "Choose a backing song from Cove, the music folder, a local song file, YouTube, or a Cove video's audio." }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: audio.kind, onChange: (e) => changeAudioKind(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "cove" }, "Cove audio"), /* @__PURE__ */ React.createElement("option", { value: "folder" }, "Music folder"), /* @__PURE__ */ React.createElement("option", { value: "upload" }, "Choose song file"), /* @__PURE__ */ React.createElement("option", { value: "youtube" }, "YouTube URL"), /* @__PURE__ */ React.createElement("option", { value: "video" }, "Cove video audio"))), audio.kind === "upload" && /* @__PURE__ */ React.createElement(Control, { label: "Song file", help: "Upload an audio file directly from your computer. The companion stores it temporarily and removes it after the PMV job." }, (id) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("input", { id, type: "file", accept: ".mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.aiff,audio/*", onChange: (e) => chooseSong(e.target.files?.[0]) }), /* @__PURE__ */ React.createElement("small", null, uploading ? "Uploading song\u2026" : audio.uploadId ? `${audio.name} ready` : "Choose an audio file up to 200 MB."))), audio.kind === "cove" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Control, { label: "Search", help: "Filter Cove's audio library by title." }, (id) => /* @__PURE__ */ React.createElement("input", { id, value: query, onChange: (e) => setQuery(e.target.value) })), /* @__PURE__ */ React.createElement(Control, { label: "Track", help: "The Cove audio record used as the backing song." }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: audio.coveAudioId || "", onChange: (e) => setAudio({ kind: "cove", coveAudioId: Number(e.target.value) }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose track"), audioItems.map((x) => /* @__PURE__ */ React.createElement("option", { value: x.id, key: x.id }, x.title || x.minPath))))), audio.kind === "folder" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Control, { label: "Folder", help: "Browse subfolders of the music folder set in Auto PMV Maker settings. Choose an audio file below." }, (id) => /* @__PURE__ */ React.createElement("div", { className: "pmv-folder-row" }, /* @__PURE__ */ React.createElement("input", { id, readOnly: true, value: folderPath || "Music folder" }), /* @__PURE__ */ React.createElement("button", { type: "button", disabled: !folderPath, onClick: () => setFolderPath(folderPath.split(/[\\/]/).slice(0, -1).join("/")) }, "Up"))), /* @__PURE__ */ React.createElement("div", { className: "pmv-file-list" }, folderItems.map((x) => /* @__PURE__ */ React.createElement("button", { type: "button", key: x.path, onClick: () => x.kind === "folder" ? setFolderPath(x.path) : setAudio({ kind: "folder", path: x.path }) }, x.kind === "folder" ? "\u{1F4C1}" : "\u266B", " ", x.name))), /* @__PURE__ */ React.createElement("p", null, audio.path || "Choose a file")), audio.kind === "youtube" && /* @__PURE__ */ React.createElement(Control, { label: "YouTube URL", help: "Paste an HTTPS YouTube video URL. The companion downloads only its audio for the PMV." }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "url", value: audio.url || "", onChange: (e) => setAudio({ kind: "youtube", url: e.target.value }) })), audio.kind === "video" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Control, { label: "Search Cove videos", help: "Filter Cove videos by title to find the source of your backing audio." }, (id) => /* @__PURE__ */ React.createElement("input", { id, value: videoQuery, onChange: (e) => setVideoQuery(e.target.value) })), /* @__PURE__ */ React.createElement(Control, { label: "Video", help: "Extracts this Cove video's audio as the backing song." }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: audio.coveVideoId || "", onChange: (e) => setAudio({ kind: "video", coveVideoId: Number(e.target.value) }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose video"), videoItems.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.id, value: x.id }, x.title || x.minPath || `Video ${x.id}`))))))), /* @__PURE__ */ React.createElement(OptionForm, { options, setOptions }), (error || settingsError) && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error || settingsError), /* @__PURE__ */ React.createElement("footer", null, /* @__PURE__ */ React.createElement(HelpAction, { label: "Cancel", help: "Closes this popup without queueing a PMV." }, /* @__PURE__ */ React.createElement("button", { onClick: cancel }, "Cancel")), /* @__PURE__ */ React.createElement(HelpAction, { label: "Create", help: "Starts a PMV job with the current source selection, backing audio, and edit controls." }, /* @__PURE__ */ React.createElement("button", { disabled: busy || uploading || audio.kind === "upload" && !audio.uploadId || !preview?.eligibleCount, onClick: create }, busy ? "Queueing\u2026" : "Create")))));
+  return /* @__PURE__ */ React.createElement("div", { className: "pmv-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Create PMV" }, /* @__PURE__ */ React.createElement("div", { className: "pmv-dialog" }, /* @__PURE__ */ React.createElement("header", null, /* @__PURE__ */ React.createElement("h2", null, "Create PMV"), /* @__PURE__ */ React.createElement("button", { onClick: cancel, "aria-label": "Close" }, "\xD7")), /* @__PURE__ */ React.createElement("p", null, preview ? `${preview.eligibleCount} eligible sources \xB7 ${preview.proposedFilename}` : "Checking sources\u2026"), !!preview?.exclusions?.length && /* @__PURE__ */ React.createElement("details", null, /* @__PURE__ */ React.createElement("summary", null, preview.exclusions.length, " excluded sources"), /* @__PURE__ */ React.createElement("ul", null, preview.exclusions.map((x, i) => /* @__PURE__ */ React.createElement("li", { key: i }, x)))), /* @__PURE__ */ React.createElement("fieldset", null, /* @__PURE__ */ React.createElement("legend", null, "Backing audio"), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, /* @__PURE__ */ React.createElement(Control, { label: "Source", help: "Choose a backing song from Cove, the music folder, a local song file, YouTube, or a Cove video's audio." }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: audio.kind, onChange: (e) => changeAudioKind(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "cove" }, "Cove audio"), /* @__PURE__ */ React.createElement("option", { value: "folder" }, "Music folder"), /* @__PURE__ */ React.createElement("option", { value: "upload" }, "Choose song file"), /* @__PURE__ */ React.createElement("option", { value: "youtube" }, "YouTube URL"), /* @__PURE__ */ React.createElement("option", { value: "video" }, "Cove video audio"))), audio.kind === "upload" && /* @__PURE__ */ React.createElement(Control, { label: "Song file", help: "Upload an audio file directly from your computer. The companion stores it temporarily and removes it after the PMV job." }, (id) => /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("input", { id, type: "file", accept: ".mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.aiff,audio/*", onChange: (e) => chooseSong(e.target.files?.[0]) }), /* @__PURE__ */ React.createElement("small", null, uploading ? "Uploading song\u2026" : audio.uploadId ? `${audio.name} ready` : "Choose an audio file up to 200 MB."))), audio.kind === "cove" && /* @__PURE__ */ React.createElement("div", { className: "pmv-track-browser pmv-grid-span" }, /* @__PURE__ */ React.createElement(Control, { label: "Search Cove audio", help: "Search Cove's audio library. Select a result below to use it as the backing song." }, (id) => /* @__PURE__ */ React.createElement("input", { id, value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search by title" })), /* @__PURE__ */ React.createElement("div", { className: "pmv-track-list", role: "region", "aria-label": "Cove audio search results" }, audioError ? /* @__PURE__ */ React.createElement("p", { role: "alert", className: "pmv-tree-hint" }, audioError) : audioLoading ? /* @__PURE__ */ React.createElement("p", { className: "pmv-tree-hint" }, "Searching\u2026") : audioItems.length ? audioItems.map((x) => {
+    const url = `/api/audios/${x.id}/stream`;
+    return /* @__PURE__ */ React.createElement(
+      TrackRow,
+      {
+        key: x.id,
+        name: x.title || x.minPath || `Audio ${x.id}`,
+        selected: audio.coveAudioId === x.id,
+        playing: playingUrl === url,
+        onSelect: () => {
+          setAudio({ kind: "cove", coveAudioId: x.id });
+          setSelectedAudioName(x.title || x.minPath || `Audio ${x.id}`);
+        },
+        onPreview: () => playPreview(url)
+      }
+    );
+  }) : /* @__PURE__ */ React.createElement("p", { className: "pmv-tree-hint" }, "No matching audio tracks.")), audio.coveAudioId && /* @__PURE__ */ React.createElement("small", { className: "pmv-selected-track" }, "Selected: ", selectedAudioName || `Audio ${audio.coveAudioId}`)), audio.kind === "folder" && /* @__PURE__ */ React.createElement("div", { className: "pmv-grid-span" }, /* @__PURE__ */ React.createElement(
+    MusicTree,
+    {
+      selectedPath: audio.path,
+      playingUrl,
+      onSelect: (path) => setAudio({ kind: "folder", path }),
+      onPreview: playPreview
+    }
+  ), audio.path && /* @__PURE__ */ React.createElement("small", { className: "pmv-selected-track" }, "Selected: ", audio.path)), audio.kind === "youtube" && /* @__PURE__ */ React.createElement(Control, { label: "YouTube URL", help: "Paste an HTTPS YouTube video URL. The companion downloads only its audio for the PMV." }, (id) => /* @__PURE__ */ React.createElement("input", { id, type: "url", value: audio.url || "", onChange: (e) => setAudio({ kind: "youtube", url: e.target.value }) })), audio.kind === "video" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Control, { label: "Search Cove videos", help: "Filter Cove videos by title to find the source of your backing audio." }, (id) => /* @__PURE__ */ React.createElement("input", { id, value: videoQuery, onChange: (e) => setVideoQuery(e.target.value) })), /* @__PURE__ */ React.createElement(Control, { label: "Video", help: "Extracts this Cove video's audio as the backing song." }, (id) => /* @__PURE__ */ React.createElement("select", { id, value: audio.coveVideoId || "", onChange: (e) => setAudio({ kind: "video", coveVideoId: Number(e.target.value) }) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "Choose video"), videoItems.map((x) => /* @__PURE__ */ React.createElement("option", { key: x.id, value: x.id }, x.title || x.minPath || `Video ${x.id}`)))))), !audioReady && /* @__PURE__ */ React.createElement("small", { className: "pmv-audio-hint" }, "Choose a backing track to enable Create."), /* @__PURE__ */ React.createElement(
+    "audio",
+    {
+      ref: audioPlayer,
+      className: "pmv-audio-preview",
+      controls: true,
+      style: { display: previewUrl ? "block" : "none" },
+      onEnded: () => setPlayingUrl(""),
+      onPause: () => setPlayingUrl(""),
+      onError: () => {
+        setPlayingUrl("");
+        setError("Could not play this track. Check that Cove can read it and your account can stream audio.");
+      }
+    }
+  )), /* @__PURE__ */ React.createElement(OptionForm, { options, setOptions }), (error || settingsError) && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error || settingsError), /* @__PURE__ */ React.createElement("footer", null, /* @__PURE__ */ React.createElement(HelpAction, { label: "Cancel", help: "Closes this popup without queueing a PMV." }, /* @__PURE__ */ React.createElement("button", { onClick: cancel }, "Cancel")), /* @__PURE__ */ React.createElement(HelpAction, { label: "Create", help: "Starts a PMV job with the current source selection, backing audio, and edit controls." }, /* @__PURE__ */ React.createElement("button", { disabled: busy || uploading || !audioReady || !preview?.eligibleCount, onClick: create }, busy ? "Queueing\u2026" : "Create")))));
 }
 function PmvLauncher() {
   const [context, setContext] = useState(null);

@@ -1,7 +1,7 @@
 {
   "id": "io.github.jiwenjimiran.auto-pmv-maker",
   "name": "Auto PMV Maker",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Song-led PMVs rendered by DaVinci Resolve Studio on a Windows companion.",
   "author": "jiwenji",
   "kind": "extension",

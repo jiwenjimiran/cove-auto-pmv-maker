@@ -47,8 +47,13 @@ class EngineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "No detectable face"):
                 edit_plan([source], [0, 2], {"selectionMode": "face"}, "three-pane")
             analyzer.return_value.analyze.return_value = ((0.1, 0.35), (1.5, 0.65))
-            clips = edit_plan([source], [0, 2], {"selectionMode": "face"}, "three-pane")
+            updates = []
+            clips = edit_plan([source], [0, 2], {"selectionMode": "face"}, "three-pane",
+                              progress=lambda percent, message: updates.append((percent, message)))
             self.assertEqual(clips[0].face_track, ((0.1, 0.35), (1.5, 0.65)))
+            self.assertTrue(any("Looking for faces: video 1" in message for _, message in updates))
+            self.assertTrue(any("Selected clip" in message for _, message in updates))
+            self.assertTrue(all(25 <= percent < 40 for percent, _ in updates))
 
     def test_edit_plan_covers_sources_and_uses_three_independent_panes(self):
         sources = [self.source(i) for i in range(1, 7)]

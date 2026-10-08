@@ -21,6 +21,7 @@ public sealed class PmvSettings
     public string ProjectFolder { get; set; } = "";
     public string MusicFolder { get; set; } = "";
     public List<PathMapping> PathMappings { get; set; } = [];
+    public int ColorDefaultsVersion { get; set; } = 1;
     public PmvOptions Defaults { get; set; } = new();
 }
 
@@ -47,7 +48,7 @@ public sealed class PmvOptions
     public double FlashIntensityMax { get; set; }
     public double GlitchIntensityMin { get; set; }
     public double GlitchIntensityMax { get; set; }
-    public string ColorTreatment { get; set; } = "matched";
+    public string ColorTreatment { get; set; } = "natural";
     public double? SongTrimStart { get; set; }
     public double? SongTrimEnd { get; set; }
     public int? OutputFps { get; set; }

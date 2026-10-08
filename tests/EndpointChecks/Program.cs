@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Reflection;
 using Cove.PmvMaker;
+using Cove.Plugins;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
@@ -10,7 +11,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.WebHost.UseUrls("http://127.0.0.1:0");
 var app = builder.Build();
-new PmvMakerExtension().MapEndpoints(app);
+var fixtureRoot = Directory.CreateTempSubdirectory("pmv-preview-check-").FullName;
+var musicRoot = Directory.CreateDirectory(Path.Combine(fixtureRoot, "music")).FullName;
+await File.WriteAllBytesAsync(Path.Combine(musicRoot, "song.mp3"), [1, 2, 3, 4, 5, 6]);
+await File.WriteAllBytesAsync(Path.Combine(fixtureRoot, "outside.mp3"), [7, 8, 9]);
+var pmvExtension = new PmvMakerExtension();
+pmvExtension.SetStore(new MemoryStore(JsonSerializer.Serialize(new { musicFolder = musicRoot,
+    defaults = new { colorTreatment = "matched" } })));
+pmvExtension.MapEndpoints(app);
 await app.StartAsync();
 try
 {
@@ -29,6 +37,18 @@ try
     using var settingsJson = await ReadJson(settings, HttpStatusCode.OK);
     if (settingsJson.RootElement.GetProperty("defaults").GetProperty("sourceAudio").GetString() != "mixed")
         throw new Exception("Settings endpoint did not return the expected defaults.");
+    if (settingsJson.RootElement.GetProperty("defaults").GetProperty("colorTreatment").GetString() != "natural")
+        throw new Exception("Older saved settings should adopt the new None color matching default.");
+
+    using var audioPreview = new HttpRequestMessage(HttpMethod.Get, address + "/api/ext/pmv/music-preview?path=song.mp3");
+    audioPreview.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 2);
+    using var previewResponse = await client.SendAsync(audioPreview);
+    if (previewResponse.StatusCode != HttpStatusCode.PartialContent ||
+        !((await previewResponse.Content.ReadAsByteArrayAsync()).SequenceEqual(new byte[] { 1, 2, 3 })))
+        throw new Exception("Music preview must support browser range playback.");
+    using var escapedPreview = await client.GetAsync(address + "/api/ext/pmv/music-preview?path=" + Uri.EscapeDataString("../outside.mp3"));
+    if (escapedPreview.StatusCode != HttpStatusCode.NotFound)
+        throw new Exception("Music preview must not stream files outside the configured folder.");
 
     using var drives = await client.GetAsync(address + "/api/ext/pmv/folders");
     using var drivesJson = await ReadJson(drives, HttpStatusCode.OK);
@@ -88,6 +108,7 @@ try
 finally
 {
     await app.StopAsync();
+    Directory.Delete(fixtureRoot, recursive: true);
 }
 
 static async Task<JsonDocument> ReadJson(HttpResponseMessage response, HttpStatusCode expected)
@@ -96,4 +117,13 @@ static async Task<JsonDocument> ReadJson(HttpResponseMessage response, HttpStatu
     if (response.StatusCode != expected || body.Length == 0 || response.Content.Headers.ContentType?.MediaType != "application/json")
         throw new Exception($"Expected {(int)expected} JSON, got {(int)response.StatusCode} {response.Content.Headers.ContentType}: '{body}'.");
     return JsonDocument.Parse(body);
+}
+
+sealed class MemoryStore(string settingsJson) : IExtensionStore
+{
+    private string _settingsJson = settingsJson;
+    public Task<string?> GetAsync(string key, CancellationToken ct = default) => Task.FromResult<string?>(key == "settings" ? _settingsJson : null);
+    public Task SetAsync(string key, string value, CancellationToken ct = default) { if (key == "settings") _settingsJson = value; return Task.CompletedTask; }
+    public Task DeleteAsync(string key, CancellationToken ct = default) { if (key == "settings") _settingsJson = ""; return Task.CompletedTask; }
+    public Task<Dictionary<string, string>> GetAllAsync(CancellationToken ct = default) => Task.FromResult(new Dictionary<string, string> { ["settings"] = _settingsJson });
 }

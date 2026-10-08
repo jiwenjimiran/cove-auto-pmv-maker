@@ -147,7 +147,7 @@ def option_range(options, key, phase, default):
     return lower + (upper - lower) * max(0.0, min(1.0, phase))
 
 
-def edit_plan(sources, beats, options, layout, cancel=None):
+def edit_plan(sources, beats, options, layout, cancel=None, progress=None):
     if not sources:
         raise ValueError("No eligible video sources")
     if layout == "three-pane" and options.get("useVerticalVideosOnly"):
@@ -196,7 +196,15 @@ def edit_plan(sources, beats, options, layout, cancel=None):
     # A large studio may contain far more videos than the track can show. Decode only
     # those that can actually occupy a cut while keeping format preflight on every source.
     active = sources[:min(len(sources), (len(cuts) - 1) * pane_count)]
-    pools = {int(s["id"]): candidate_ranges(s, bool(s.get("tagOnly")), cancel) for s in active}
+    pools = {}
+    for index, source in enumerate(active):
+        if cancel and cancel.is_set():
+            raise InterruptedError("Source analysis cancelled")
+        if progress:
+            method = "Checking timed segments" if source.get("tagOnly") else "Finding usable ranges"
+            progress(25 + 8 * index / max(1, len(active)),
+                     f"{method}: video {source['id']} ({index + 1}/{len(active)}) — {Path(source['path']).name}")
+        pools[int(source["id"])] = candidate_ranges(source, bool(source.get("tagOnly")), cancel)
     usable = [s for s in active if pools[int(s["id"])] ]
     if not usable:
         raise ValueError("No usable ranges in selected sources")
@@ -234,6 +242,9 @@ def edit_plan(sources, beats, options, layout, cancel=None):
                         face_track = ()
                         center = 0.5
                         if selection == "face":
+                            if progress:
+                                progress(33 + 6 * position / max(1, (len(cuts) - 1) * pane_count),
+                                         f"Looking for faces: video {sid}, clip {slot + 1}/{len(cuts) - 1}, pane {pane + 1}/{pane_count}")
                             face_track = analyzer.analyze(candidate["path"], candidate_start, length, pane_aspect,
                                                           bool(options.get("keepFaceCentered", True)), cancel)
                             if face_track is None:
@@ -258,6 +269,9 @@ def edit_plan(sources, beats, options, layout, cancel=None):
             phrase_accent = any(abs(a - phrase) < 0.12 for phrase in phrases)
             result.append(Clip(sid, source["path"], start, length, a, pane, segment_id,
                                phrase_accent or (style == "high-energy" and slot % 4 == 0), center, face_track))
+            if progress:
+                progress(33 + 6.5 * (position + 1) / max(1, (len(cuts) - 1) * pane_count),
+                         f"Selected clip {slot + 1}/{len(cuts) - 1}, pane {pane + 1}/{pane_count}: video {sid} at {start:.1f}s")
     return result
 
 

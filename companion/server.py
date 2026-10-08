@@ -198,8 +198,8 @@ def do_job(job_id, payload):
                     raise ValueError("Song trim must leave at least two seconds")
                 update(12, "Analyzing beats and phrases")
                 beats = beat_grid(song, trim_start, trim_end, cancelled)
-                update(25, "Analyzing source footage")
-                clips = edit_plan(sources, beats, options, options["layout"], cancelled)
+                update(25, f"Finding usable footage in {len(sources)} eligible videos")
+                clips = edit_plan(sources, beats, options, options["layout"], cancelled, update)
                 if cancelled.is_set():
                     raise InterruptedError("Cancelled")
                 used_video_ids = sorted({c.video_id for c in clips})
@@ -207,9 +207,9 @@ def do_job(job_id, payload):
                 stem = output_stem(sources, clips, payload.get("launchName"))
                 output_path, marker = reserve_output(payload["outputFolder"], stem, payload.get("projectFolder", ""),
                                                      bool(options.get("saveProject")))
-                update(40, "Mixing source accents and backing song")
+                update(40, f"Mixing backing song and source accents from {len(clips)} clips")
                 mix = mix_audio(song, clips, options, temp, beats[-1], trim_start, cancelled)
-                update(52, "Building Resolve timeline")
+                update(52, f"Importing {len(used_video_ids)} used videos into Resolve")
                 render(clips, mix, output_path, width, height, fps, options, payload.get("projectFolder", ""), cancelled, update,
                        require_validation=not skip_checks)
                 state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,

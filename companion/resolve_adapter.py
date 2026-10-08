@@ -95,6 +95,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         for path in paths:
             if not Path(path).is_file():
                 raise RuntimeError("Resolve cannot read " + path)
+        progress(52.2, f"Importing {len(paths) - 1} videos and final audio into Resolve")
         imported = media_storage.AddItemListToMediaPool([{"media": path} for path in paths])
         if not imported or len(imported) != len(paths):
             # Some versions import an existing item only once; resolve by path.
@@ -132,8 +133,18 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             check(timeline.AddTrack("video"), "AddTrack video")
         for _ in range(1 - timeline.GetTrackCount("audio")):
             check(timeline.AddTrack("audio"), "AddTrack audio")
-        treatment = options.get("colorTreatment", "matched")
-        luma = {path: source_luma(path) for path in {clip.path for clip in clips}} if treatment == "matched" else {}
+        treatment = options.get("colorTreatment", "natural")
+        luma = {}
+        if treatment == "matched":
+            used_paths = list(dict.fromkeys(clip.path for clip in clips))
+            for index, path in enumerate(used_paths):
+                if cancel.is_set():
+                    raise InterruptedError("Color analysis cancelled")
+                progress(52.5 + index / max(1, len(used_paths)),
+                         f"Sampling brightness: video {index + 1}/{len(used_paths)} — {Path(path).name}")
+                luma[path] = source_luma(path)
+        else:
+            progress(53.5, "Color matching off" if treatment == "natural" else f"Applying {treatment} color tone")
         transition_on = "dissolve" in (options.get("transitionFamilies") or [])
         style = options.get("style", "rhythmic-polish")
 
@@ -198,9 +209,13 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
 
         # Main video occupies separate tracks per pane. Dissolves use short incoming
         # slices on overlay tracks with increasing opacity over the outgoing clip.
+        placed_clips = 0
         for pane in range(pane_count):
             pane_clips = sorted((clip for clip in clips if clip.pane == pane), key=lambda clip: clip.record_start)
             for position, clip in enumerate(pane_clips):
+                placed_clips += 1
+                progress(53.5 + 1.4 * placed_clips / max(1, len(clips)),
+                         f"Assembling clip {placed_clips}/{len(clips)}: video {clip.video_id}, pane {pane + 1}/{pane_count}, timeline {clip.record_start:.1f}s")
                 fade = 0.0
                 transition_intensity = intensity("transitionIntensity", clip, 0.25)
                 flash_intensity = intensity("flashIntensity", clip, 0)

@@ -57,14 +57,14 @@ export function openPmv(_action, payload) {
 }
 
 const styleHelp = {
-  "rhythmic-polish": "Precise cuts, restrained accents, and matched color.",
+  "rhythmic-polish": "Precise cuts and restrained accents.",
   "high-energy": "Faster cuts, stronger motion, and controlled accents.",
-  cinematic: "Longer shots, softer pacing, and cohesive color."
+  cinematic: "Longer shots and softer pacing."
 };
 const stylePresets = {
-  "rhythmic-polish": { motionIntensityMin: 0.15, motionIntensityMax: 0.35, transitionIntensityMin: 0.15, transitionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "matched" },
-  "high-energy": { motionIntensityMin: 0.5, motionIntensityMax: 0.8, transitionIntensityMin: 0.2, transitionIntensityMax: 0.5, flashIntensityMin: 0.2, flashIntensityMax: 0.45, glitchIntensityMin: 0.15, glitchIntensityMax: 0.35, colorTreatment: "matched" },
-  cinematic: { motionIntensityMin: 0.1, motionIntensityMax: 0.3, transitionIntensityMin: 0.35, transitionIntensityMax: 0.65, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "warm" }
+  "rhythmic-polish": { motionIntensityMin: 0.15, motionIntensityMax: 0.35, transitionIntensityMin: 0.15, transitionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0 },
+  "high-energy": { motionIntensityMin: 0.5, motionIntensityMax: 0.8, transitionIntensityMin: 0.2, transitionIntensityMax: 0.5, flashIntensityMin: 0.2, flashIntensityMax: 0.45, glitchIntensityMin: 0.15, glitchIntensityMax: 0.35 },
+  cinematic: { motionIntensityMin: 0.1, motionIntensityMax: 0.3, transitionIntensityMin: 0.35, transitionIntensityMax: 0.65, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0 }
 };
 const optionHelp = {
   layout: "Three portrait panes arrange three clips side by side. Full screen shows one clip. The frame follows a common source aspect ratio when possible.",
@@ -87,7 +87,7 @@ const optionHelp = {
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
   outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
-  colorTreatment: "Matched balances source brightness; Warm and Cool add subtle color shifts; Natural leaves color alone.",
+  colorTreatment: "None leaves source colors alone. Match brightness samples the first two seconds of each used video. Warm and Cool apply subtle color shifts.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
   scanToCove: "Imports the finished MP4 into Cove after Resolve renders it.",
   keepPerformers: "Adds performers linked to footage that actually appears in the finished PMV.",
@@ -199,7 +199,7 @@ const defaultOptions = {
   beatAdherence: 0.95, minClipSeconds: 1, maxClipSeconds: 5, sourceDiversity: 0.8,
   transitionFamilies: ["cut", "dissolve"], transitionIntensityMin: 0.15, transitionIntensityMax: 0.35,
   motionIntensityMin: 0.15, motionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0,
-  glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "matched", songTrimStart: null,
+  glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "natural", songTrimStart: null,
   songTrimEnd: null, outputFps: null, saveProject: false, scanToCove: true,
   keepPerformers: true, keepTags: true, addPmvTag: true, addAutoPmvTag: true
 };
@@ -226,7 +226,7 @@ function OptionForm({ options, setOptions }) {
       {["songTrimStart", "songTrimEnd"].map((key, i) => <Control key={key} label={["Song start (sec)", "Song end (sec)"][i]} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
       <Control label="FPS override" help={optionHelp.outputFps}>{id => <select id={id} value={options.outputFps ?? ""} onChange={e => set("outputFps", e.target.value ? Number(e.target.value) : null)}><option value="">Auto</option><option value="24">24 fps</option><option value="25">25 fps</option><option value="30">30 fps</option><option value="50">50 fps</option><option value="60">60 fps</option></select>}</Control>
       <Control label="Transitions" help={optionHelp.transitionFamilies}>{id => <select id={id} value={options.transitionFamilies?.join(",") || "cut"} onChange={e => set("transitionFamilies", e.target.value.split(","))}><option value="cut">Cuts</option><option value="cut,dissolve">Cuts and dissolves</option></select>}</Control>
-      <Control label="Color treatment" help={optionHelp.colorTreatment}>{id => <select id={id} value={options.colorTreatment} onChange={e => set("colorTreatment", e.target.value)}><option value="matched">Matched</option><option value="warm">Warm</option><option value="cool">Cool</option><option value="natural">Natural</option></select>}</Control>
+      <Control label="Color matching" help={optionHelp.colorTreatment}>{id => <select id={id} value={options.colorTreatment} onChange={e => set("colorTreatment", e.target.value)}><option value="natural">None</option><option value="matched">Match brightness</option><option value="warm">Warm</option><option value="cool">Cool</option></select>}</Control>
     </div><div className="pmv-form-heading"><h5>Output and Cove metadata</h5><span>03</span></div><div className="pmv-checkbox-grid">
       {[["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"], ["addAutoPmvTag", "Add Auto_PMV tag"]].map(([key, label]) => <Control key={key} label={label} help={optionHelp[key]} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options[key]} onChange={e => set(key, e.target.checked)} />}</Control>)}
     </div></details>
@@ -325,33 +325,110 @@ export function PmvSettingsPanel() {
   </div>;
 }
 
+function TrackRow({ name, selected, playing, onSelect, onPreview, depth = 0 }) {
+  return <div className={`pmv-track-row ${selected ? "is-selected" : ""}`} style={{ paddingLeft: 8 + depth * 18 }}>
+    <button type="button" className="pmv-track-select" onClick={onSelect} title={name} aria-pressed={selected}>♫ <span>{name}</span></button>
+    <button type="button" className="pmv-track-play" onClick={onPreview} title={`${playing ? "Pause" : "Play"} ${name}`} aria-label={`${playing ? "Pause" : "Play"} ${name}`}>{playing ? "Ⅱ" : "▶"}</button>
+  </div>;
+}
+
+function MusicNode({ item, depth, selectedPath, playingUrl, onSelect, onPreview }) {
+  const [open, setOpen] = useState(false);
+  const [children, setChildren] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open || children !== null) return;
+    let active = true;
+    api(`/music?path=${encodeURIComponent(item.path)}`).then(rows => { if (active) setChildren(rows); })
+      .catch(e => { if (active) setError(e.message); });
+    return () => { active = false; };
+  }, [open, item.path, children]);
+  if (item.kind === "file") {
+    const url = `/api/ext/pmv/music-preview?path=${encodeURIComponent(item.path)}`;
+    return <TrackRow name={item.name} depth={depth} selected={selectedPath === item.path} playing={playingUrl === url}
+      onSelect={() => onSelect(item.path)} onPreview={() => onPreview(url)} />;
+  }
+  return <>
+    <div className="pmv-music-folder" style={{ paddingLeft: 8 + depth * 18 }}>
+      <button type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} title={item.path}>
+        <span className={`pmv-chevron ${open ? "is-open" : ""}`} /> <span>▸</span> {item.name}
+      </button>
+    </div>
+    {open && (error ? <p role="alert" className="pmv-tree-hint">{error}</p> : children === null ? <small className="pmv-tree-hint">Loading tracks…</small>
+      : children.length ? children.map(child => <MusicNode key={child.path} item={child} depth={depth + 1}
+        selectedPath={selectedPath} playingUrl={playingUrl} onSelect={onSelect} onPreview={onPreview} />)
+        : <small className="pmv-tree-empty">Empty folder</small>)}
+  </>;
+}
+
+function MusicTree({ selectedPath, playingUrl, onSelect, onPreview }) {
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => { let active = true; api("/music").then(rows => { if (active) setItems(rows); })
+    .catch(e => { if (active) setError(e.message); }); return () => { active = false; }; }, []);
+  return <div className="pmv-track-browser">
+    <div className="pmv-track-browser-head"><strong>Music folder</strong><small>Choose a song; use Play to listen first.</small></div>
+    <div className="pmv-track-list" role="region" aria-label="Music folder tracks">
+      {error ? <p role="alert" className="pmv-tree-hint">{error}</p> : items === null ? <p className="pmv-tree-hint">Loading music folder…</p>
+        : items.length ? items.map(item => <MusicNode key={item.path} item={item} depth={0}
+          selectedPath={selectedPath} playingUrl={playingUrl} onSelect={onSelect} onPreview={onPreview} />)
+          : <p className="pmv-tree-hint">No songs in this folder.</p>}
+    </div>
+  </div>;
+}
+
 function PmvDialog({ context, close }) {
   const [settings, , settingsError] = useSettings("/defaults");
   const [options, setOptions] = useState(defaultOptions);
   const [audio, setAudio] = useState({ kind: "cove" });
   const [query, setQuery] = useState("");
   const [audioItems, setAudioItems] = useState([]);
+  const [selectedAudioName, setSelectedAudioName] = useState("");
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState("");
   const [videoItems, setVideoItems] = useState([]);
   const [videoQuery, setVideoQuery] = useState("");
-  const [folderItems, setFolderItems] = useState([]);
-  const [folderPath, setFolderPath] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [playingUrl, setPlayingUrl] = useState("");
+  const audioPlayer = useRef(null);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const uploadGeneration = useRef(0);
   useEffect(() => { if (settings) setOptions({ ...defaultOptions, ...settings.defaults }); }, [settings]);
-  useEffect(() => { if (audio.kind === "cove") api("/audio?q=" + encodeURIComponent(query)).then(setAudioItems).catch(e => setError(e.message)); }, [audio.kind, query]);
+  useEffect(() => {
+    if (audio.kind !== "cove") return;
+    let active = true;
+    setAudioLoading(true); setAudioError("");
+    const timer = window.setTimeout(() => api("/audio?q=" + encodeURIComponent(query))
+      .then(rows => { if (active) setAudioItems(rows); })
+      .catch(e => { if (active) { setAudioItems([]); setAudioError(e.message.includes("403") ? "Cove denied audio access. Your account needs Audios read permission." : e.message); } })
+      .finally(() => { if (active) setAudioLoading(false); }), 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [audio.kind, query]);
   useEffect(() => { if (audio.kind === "video") api("/videos?q=" + encodeURIComponent(videoQuery)).then(setVideoItems).catch(e => setError(e.message)); }, [audio.kind, videoQuery]);
-  useEffect(() => { if (audio.kind === "folder") api("/music?path=" + encodeURIComponent(folderPath)).then(setFolderItems).catch(e => setError(e.message)); }, [audio.kind, folderPath]);
   const scope = { entityType: context.entityType, entityIds: context.entityIds || context.selectedIds,
     includeChildStudios: !!context.includeChildStudios, videoFilter: context.videoFilter || null,
     videoFilterExpression: context.videoFilterExpression || null, findQuery: context.findQuery || null };
   const request = { scope, audio, options };
+  const audioReady = audio.kind === "cove" ? Number(audio.coveAudioId) > 0 : audio.kind === "folder" ? !!audio.path
+    : audio.kind === "upload" ? !!audio.uploadId : audio.kind === "video" ? Number(audio.coveVideoId) > 0
+      : audio.kind === "youtube" && /^https:\/\//i.test(audio.url || "");
   const removeUpload = uploadId => { if (uploadId) api(`/uploads/${uploadId}`, "DELETE").catch(() => {}); };
+  const playPreview = url => {
+    const player = audioPlayer.current;
+    if (!player) return;
+    if (playingUrl === url && !player.paused) { player.pause(); setPlayingUrl(""); return; }
+    if (previewUrl !== url) { player.src = url; setPreviewUrl(url); }
+    setError("");
+    player.play().then(() => setPlayingUrl(url)).catch(() => setError("Could not play this track in the browser."));
+  };
   const changeAudioKind = kind => {
     uploadGeneration.current += 1;
     removeUpload(audio.uploadId);
+    setSelectedAudioName("");
+    audioPlayer.current?.pause(); setPreviewUrl(""); setPlayingUrl("");
     setUploading(false);
     setAudio(kind === "video" && context.entityType === "video" && scope.entityIds.length === 1
       ? { kind, coveVideoId: scope.entityIds[0] } : { kind });
@@ -369,7 +446,7 @@ function PmvDialog({ context, close }) {
     } catch (e) { if (generation === uploadGeneration.current) setError(e.message); }
     finally { if (generation === uploadGeneration.current) setUploading(false); }
   };
-  const cancel = () => { uploadGeneration.current += 1; removeUpload(audio.uploadId); close(); };
+  const cancel = () => { uploadGeneration.current += 1; removeUpload(audio.uploadId); audioPlayer.current?.pause(); close(); };
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => api("/preview", "POST", request)
@@ -377,9 +454,9 @@ function PmvDialog({ context, close }) {
       .catch(e => { if (active) setError(e.message); }), 150);
     return () => { active = false; window.clearTimeout(timer); };
   }, [JSON.stringify(scope), JSON.stringify(options)]);
-  const create = async () => { setBusy(true); setError(""); try {
-    const result = await api("/create", "POST", request);
-    window.alert(`PMV queued. Job: ${result.jobId}`); close();
+  const create = async () => { if (!audioReady) { setError("Choose a backing track before creating the PMV."); return; } setBusy(true); setError(""); try {
+    await api("/create", "POST", request);
+    audioPlayer.current?.pause(); close();
   } catch (e) { setError(e.message); } finally { setBusy(false); } };
   return <div className="pmv-overlay" role="dialog" aria-modal="true" aria-label="Create PMV"><div className="pmv-dialog">
     <header><h2>Create PMV</h2><button onClick={cancel} aria-label="Close">×</button></header>
@@ -388,14 +465,28 @@ function PmvDialog({ context, close }) {
     <fieldset><legend>Backing audio</legend><div className="pmv-grid">
       <Control label="Source" help="Choose a backing song from Cove, the music folder, a local song file, YouTube, or a Cove video's audio.">{id => <select id={id} value={audio.kind} onChange={e => changeAudioKind(e.target.value)}><option value="cove">Cove audio</option><option value="folder">Music folder</option><option value="upload">Choose song file</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control>
       {audio.kind === "upload" && <Control label="Song file" help="Upload an audio file directly from your computer. The companion stores it temporarily and removes it after the PMV job.">{id => <><input id={id} type="file" accept=".mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.aiff,audio/*" onChange={e => chooseSong(e.target.files?.[0])} /><small>{uploading ? "Uploading song…" : audio.uploadId ? `${audio.name} ready` : "Choose an audio file up to 200 MB."}</small></>}</Control>}
-      {audio.kind === "cove" && <><Control label="Search" help="Filter Cove's audio library by title.">{id => <input id={id} value={query} onChange={e => setQuery(e.target.value)} />}</Control><Control label="Track" help="The Cove audio record used as the backing song.">{id => <select id={id} value={audio.coveAudioId || ""} onChange={e => setAudio({ kind: "cove", coveAudioId: Number(e.target.value) })}><option value="">Choose track</option>{audioItems.map(x => <option value={x.id} key={x.id}>{x.title || x.minPath}</option>)}</select>}</Control></>}
-      {audio.kind === "folder" && <><Control label="Folder" help="Browse subfolders of the music folder set in Auto PMV Maker settings. Choose an audio file below.">{id => <div className="pmv-folder-row"><input id={id} readOnly value={folderPath || "Music folder"} /><button type="button" disabled={!folderPath} onClick={() => setFolderPath(folderPath.split(/[\\/]/).slice(0, -1).join("/"))}>Up</button></div>}</Control><div className="pmv-file-list">{folderItems.map(x => <button type="button" key={x.path} onClick={() => x.kind === "folder" ? setFolderPath(x.path) : setAudio({ kind: "folder", path: x.path })}>{x.kind === "folder" ? "📁" : "♫"} {x.name}</button>)}</div><p>{audio.path || "Choose a file"}</p></>}
+      {audio.kind === "cove" && <div className="pmv-track-browser pmv-grid-span">
+        <Control label="Search Cove audio" help="Search Cove's audio library. Select a result below to use it as the backing song.">{id => <input id={id} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by title" />}</Control>
+        <div className="pmv-track-list" role="region" aria-label="Cove audio search results">
+          {audioError ? <p role="alert" className="pmv-tree-hint">{audioError}</p> : audioLoading ? <p className="pmv-tree-hint">Searching…</p>
+            : audioItems.length ? audioItems.map(x => { const url = `/api/audios/${x.id}/stream`; return <TrackRow key={x.id}
+              name={x.title || x.minPath || `Audio ${x.id}`} selected={audio.coveAudioId === x.id} playing={playingUrl === url}
+              onSelect={() => { setAudio({ kind: "cove", coveAudioId: x.id }); setSelectedAudioName(x.title || x.minPath || `Audio ${x.id}`); }} onPreview={() => playPreview(url)} />; })
+              : <p className="pmv-tree-hint">No matching audio tracks.</p>}
+        </div>
+        {audio.coveAudioId && <small className="pmv-selected-track">Selected: {selectedAudioName || `Audio ${audio.coveAudioId}`}</small>}
+      </div>}
+      {audio.kind === "folder" && <div className="pmv-grid-span"><MusicTree selectedPath={audio.path} playingUrl={playingUrl}
+        onSelect={path => setAudio({ kind: "folder", path })} onPreview={playPreview} />
+        {audio.path && <small className="pmv-selected-track">Selected: {audio.path}</small>}</div>}
       {audio.kind === "youtube" && <Control label="YouTube URL" help="Paste an HTTPS YouTube video URL. The companion downloads only its audio for the PMV.">{id => <input id={id} type="url" value={audio.url || ""} onChange={e => setAudio({ kind: "youtube", url: e.target.value })} />}</Control>}
       {audio.kind === "video" && <><Control label="Search Cove videos" help="Filter Cove videos by title to find the source of your backing audio.">{id => <input id={id} value={videoQuery} onChange={e => setVideoQuery(e.target.value)} />}</Control><Control label="Video" help="Extracts this Cove video's audio as the backing song.">{id => <select id={id} value={audio.coveVideoId || ""} onChange={e => setAudio({ kind: "video", coveVideoId: Number(e.target.value) })}><option value="">Choose video</option>{videoItems.map(x => <option key={x.id} value={x.id}>{x.title || x.minPath || `Video ${x.id}`}</option>)}</select>}</Control></>}
-    </div></fieldset>
+    </div>{!audioReady && <small className="pmv-audio-hint">Choose a backing track to enable Create.</small>}<audio ref={audioPlayer} className="pmv-audio-preview" controls style={{ display: previewUrl ? "block" : "none" }}
+      onEnded={() => setPlayingUrl("")} onPause={() => setPlayingUrl("")}
+      onError={() => { setPlayingUrl(""); setError("Could not play this track. Check that Cove can read it and your account can stream audio."); }} /></fieldset>
     <OptionForm options={options} setOptions={setOptions} />
     {(error || settingsError) && <p role="alert">{error || settingsError}</p>}
-    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={cancel}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || uploading || audio.kind === "upload" && !audio.uploadId || !preview?.eligibleCount} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
+    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={cancel}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || uploading || !audioReady || !preview?.eligibleCount} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
   </div></div>;
 }
 

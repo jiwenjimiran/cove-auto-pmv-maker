@@ -30,7 +30,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.10";
+    public string Version => "0.1.11";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -299,9 +299,27 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             var path = Path.GetFullPath(Path.Combine(root, rel));
             if (!IsAtOrBelow(path, root) || !Directory.Exists(root) || !Directory.Exists(path)) return Results.BadRequest(new { message = "Invalid music folder." });
             var folders = Directory.EnumerateDirectories(path).Select(p => new { name = Path.GetFileName(p), path = Path.GetRelativePath(root, p), kind = "folder" });
-            var files = Directory.EnumerateFiles(path).Where(p => new[] { ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg" }.Contains(Path.GetExtension(p), StringComparer.OrdinalIgnoreCase))
+            var files = Directory.EnumerateFiles(path).Where(p => AudioUploadExtensions.Contains(Path.GetExtension(p)))
                 .Select(p => new { name = Path.GetFileName(p), path = Path.GetRelativePath(root, p), kind = "file" });
             return Results.Json(folders.Concat(files).OrderBy(x => x.kind).ThenBy(x => x.name), Json);
+        }).RequireCovePermission("files.read");
+        MapGetResult(endpoints, "/api/ext/pmv/music-preview", async (HttpContext ctx) =>
+        {
+            var settings = await SettingsAsync(ctx.RequestAborted);
+            if (string.IsNullOrWhiteSpace(settings.MusicFolder)) return Results.BadRequest(new { message = "Set a music folder first." });
+            var root = Path.GetFullPath(settings.MusicFolder);
+            var relative = ctx.Request.Query["path"].ToString();
+            if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative)) return Results.BadRequest(new { message = "Choose a track inside the music folder." });
+            var path = Path.GetFullPath(Path.Combine(root, relative));
+            if (!IsAtOrBelow(path, root) || !AudioUploadExtensions.Contains(Path.GetExtension(path)) || !File.Exists(path))
+                return Results.NotFound();
+            var contentType = Path.GetExtension(path).ToLowerInvariant() switch
+            {
+                ".mp3" => "audio/mpeg", ".wav" => "audio/wav", ".flac" => "audio/flac",
+                ".m4a" => "audio/mp4", ".aac" => "audio/aac", ".ogg" => "audio/ogg",
+                ".opus" => "audio/ogg", ".aiff" => "audio/aiff", _ => "application/octet-stream"
+            };
+            return Results.File(path, contentType, enableRangeProcessing: true);
         }).RequireCovePermission("files.read");
         MapPostResult(endpoints, "/api/ext/pmv/preview", async (HttpContext ctx) =>
         {
@@ -413,7 +431,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings),
             skipSetupChecks = settings.SkipSetupChecks
         };
-        progress.Report(2, "Submitting edit to Resolve Studio companion");
+        progress.Report(0.02, "Submitting edit to Resolve Studio companion");
         using var post = NewRequest(HttpMethod.Post, settings, "jobs");
         post.Content = JsonBody(payload);
         using var response = await _http.SendAsync(post, ct);
@@ -423,10 +441,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         {
             while (true)
             {
-                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 var state = (await CompanionGetAsync(settings, "jobs/" + submitted.Id, ct)).Deserialize<CompanionJob>(Json)
                     ?? throw new InvalidOperationException("Companion job state missing.");
-                progress.Report(Math.Clamp(state.Progress, 2, 98), state.Message);
+                progress.Report(Math.Clamp(state.Progress, 2, 98) / 100.0, state.Message);
                 if (state.State == "failed") throw new InvalidOperationException(state.Error ?? state.Message ?? "Resolve render failed.");
                 if (state.State == "cancelled") throw new OperationCanceledException("Resolve render cancelled.");
                 if (state.State != "complete") continue;
@@ -435,11 +453,11 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 if (!File.Exists(covePath)) throw new InvalidOperationException("Cove cannot read rendered output: " + covePath);
                 if (options.ScanToCove)
                 {
-                    progress.Report(98, "Importing PMV into Cove");
+                    progress.Report(0.98, "Importing PMV into Cove");
                     var importedId = await scope.ServiceProvider.GetRequiredService<IScanService>().ImportDownloadedVideoAsync(covePath, null, ct);
                     await ApplyMetadataAsync(db, importedId, state, resolved, options, ct);
                 }
-                progress.Report(100, "PMV saved: " + covePath);
+                progress.Report(1.0, "PMV saved: " + covePath);
                 return;
             }
         }
@@ -539,6 +557,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         {
             var settings = JsonSerializer.Deserialize<PmvSettings>(raw, Json) ?? new();
             using var document = JsonDocument.Parse(raw);
+            if (!document.RootElement.TryGetProperty("colorDefaultsVersion", out _) && settings.Defaults.ColorTreatment == "matched")
+                settings.Defaults.ColorTreatment = "natural";
+            settings.ColorDefaultsVersion = 1;
             if (!document.RootElement.TryGetProperty("companionMode", out _))
                 settings.CompanionMode = LocalCompanion.IsSupported
                     && settings.PathMappings.Count == 0
