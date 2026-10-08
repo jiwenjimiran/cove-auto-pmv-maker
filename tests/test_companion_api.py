@@ -2,7 +2,10 @@ import json
 import sys
 import tempfile
 import threading
+import time
+import types
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -13,6 +16,31 @@ import server
 
 
 class CompanionApiTests(unittest.TestCase):
+    def test_validation_runs_from_authenticated_api(self):
+        server.TOKEN = "a" * 32
+        server.VALIDATION_STATE.update(state="idle", progress=0, message="Not run", error=None)
+        listener = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=listener.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{listener.server_port}"
+        headers = {"Authorization": "Bearer " + server.TOKEN}
+        fake = types.ModuleType("smoke")
+        fake.main = lambda automated, progress: progress(18, 18, "fixture")
+        try:
+            with patch.dict(sys.modules, {"smoke": fake}):
+                request = Request(base + "/validation", data=b"", method="POST", headers=headers)
+                self.assertIn(json.load(urlopen(request, timeout=2))["state"], ("queued", "running", "complete"))
+                for _ in range(50):
+                    state = json.load(urlopen(Request(base + "/validation", headers=headers), timeout=2))
+                    if state["state"] == "complete":
+                        break
+                    time.sleep(0.02)
+                self.assertEqual(state["state"], "complete")
+                self.assertEqual(state["progress"], 100)
+        finally:
+            listener.shutdown()
+            listener.server_close()
+
     def test_authenticated_preflight_rejects_missing_media_and_accepts_paths(self):
         server.TOKEN = "a" * 32
         listener = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -20,6 +48,12 @@ class CompanionApiTests(unittest.TestCase):
         thread.start()
         base = f"http://127.0.0.1:{listener.server_port}"
         try:
+            with self.assertRaises(HTTPError) as denied_ready:
+                urlopen(base + "/ready", timeout=2)
+            self.assertEqual(denied_ready.exception.code, 401)
+            denied_ready.exception.close()
+            ready = Request(base + "/ready", headers={"Authorization": "Bearer " + server.TOKEN})
+            self.assertTrue(json.load(urlopen(ready, timeout=2))["ok"])
             with tempfile.TemporaryDirectory() as root:
                 source = Path(root) / "source.mp4"
                 audio = Path(root) / "song.wav"

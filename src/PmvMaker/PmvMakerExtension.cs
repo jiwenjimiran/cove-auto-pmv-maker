@@ -21,11 +21,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private IExtensionStore? _store;
     private IExtensionServiceScopeFactory? _scopes;
+    private LocalCompanion? _local;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(20) };
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.3";
+    public string Version => "0.1.4";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -33,12 +34,21 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     public string? MinCoveVersion => "1.5.1";
     public IReadOnlyList<string> Categories => ["video", "automation", "tools"];
 
-    public void ConfigureServices(IServiceCollection services, ExtensionContext context) => services.AddScoped<SourceResolver>();
+    public void ConfigureServices(IServiceCollection services, ExtensionContext context)
+    {
+        services.AddScoped<SourceResolver>();
+        _local ??= new LocalCompanion(Path.Combine(context.DataDirectory, ExtensionId, "companion", "AutoPmvMakerCompanion.zip"));
+    }
     public void SetStore(IExtensionStore store) => _store = store;
-    public Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
+    public async Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
         _scopes = services.GetRequiredService<IExtensionServiceScopeFactory>();
-        return Task.CompletedTask;
+        if ((await SettingsAsync(ct)).CompanionMode == "auto" && _local is not null)
+            await _local.EnsureRunningAsync(ct);
+    }
+    public async Task ShutdownAsync(CancellationToken ct = default)
+    {
+        if (_local is not null) await _local.StopAsync(ct);
     }
 
     public UIManifest GetUIManifest() => new()
@@ -62,25 +72,70 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     {
         MapGetResult(endpoints, "/api/ext/pmv/settings", async (HttpContext ctx) => Results.Json(PublicSettings(await SettingsAsync(ctx.RequestAborted)), Json))
             .RequireCovePermission("system.settings.write");
+        MapGetResult(endpoints, "/api/ext/pmv/local-companion", async (HttpContext ctx) =>
+        {
+            var settings = await SettingsAsync(ctx.RequestAborted);
+            if (settings.CompanionMode == "auto" && _local is not null)
+                await _local.EnsureRunningAsync(ctx.RequestAborted);
+            return Results.Json(_local?.Status ?? new LocalCompanionStatus(false, false, "Local companion control is unavailable."), Json);
+        }).RequireCovePermission("system.settings.write");
+        MapPostResult(endpoints, "/api/ext/pmv/local-companion/start", async (HttpContext ctx) =>
+        {
+            if ((await SettingsAsync(ctx.RequestAborted)).CompanionMode != "auto")
+                return Results.BadRequest(new { message = "Switch to automatic local mode first." });
+            return Results.Json(_local is null
+                ? new LocalCompanionStatus(false, false, "Local companion control is unavailable.")
+                : await _local.EnsureRunningAsync(ctx.RequestAborted), Json);
+        }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/defaults", async (HttpContext ctx) =>
             Results.Json(new { defaults = (await SettingsAsync(ctx.RequestAborted)).Defaults }, Json))
             .RequireCovePermission("videos.read");
         MapPutResult(endpoints, "/api/ext/pmv/settings", async (HttpContext ctx) =>
         {
             var settings = await ctx.Request.ReadFromJsonAsync<PmvSettings>(Json, ctx.RequestAborted) ?? new();
-            if (string.IsNullOrWhiteSpace(settings.CompanionUrl) || !Uri.TryCreate(settings.CompanionUrl, UriKind.Absolute, out var uri)
-                || uri.Scheme != "http") return Results.BadRequest(new { message = "Enter a local HTTP companion URL." });
+            if (settings.CompanionMode is not ("auto" or "external"))
+                return Results.BadRequest(new { message = "Choose automatic or external companion mode." });
+            if (settings.CompanionMode == "auto" && !LocalCompanion.IsSupported)
+                return Results.BadRequest(new { message = "Automatic mode requires native Cove in a signed-in Windows desktop session." });
+            if (settings.CompanionMode == "external" && (string.IsNullOrWhiteSpace(settings.CompanionUrl)
+                || !Uri.TryCreate(settings.CompanionUrl, UriKind.Absolute, out var uri) || uri.Scheme != "http"))
+                return Results.BadRequest(new { message = "Enter a local HTTP companion URL." });
             if (_store is null) return Results.Problem("Extension storage unavailable.");
-            if (string.IsNullOrWhiteSpace(settings.CompanionToken))
+            if (settings.CompanionMode == "external" && string.IsNullOrWhiteSpace(settings.CompanionToken))
                 settings.CompanionToken = (await SettingsAsync(ctx.RequestAborted)).CompanionToken;
+            if (settings.CompanionMode == "auto")
+            {
+                settings.CompanionUrl = "http://127.0.0.1:8765";
+                settings.CompanionToken = "";
+            }
             await _store.SetAsync("settings", JsonSerializer.Serialize(settings, Json), ctx.RequestAborted);
+            if (settings.CompanionMode == "auto" && _local is not null)
+                await _local.EnsureRunningAsync(ctx.RequestAborted);
+            else if (_local is not null)
+                await _local.StopAsync(ctx.RequestAborted);
             return Results.Json(PublicSettings(settings), Json);
         }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/health", async (HttpContext ctx) =>
         {
-            try { return Results.Json(await CompanionGetAsync(await SettingsAsync(ctx.RequestAborted), "health", ctx.RequestAborted), Json); }
+            try { return Results.Json(await CompanionGetAsync(await EffectiveSettingsAsync(ctx.RequestAborted), "health", ctx.RequestAborted), Json); }
             catch (Exception ex) { return Results.Json(new { ok = false, error = ex.Message }, Json); }
         }).RequireCovePermission("videos.read");
+        MapGetResult(endpoints, "/api/ext/pmv/validation", async (HttpContext ctx) =>
+        {
+            try { return Results.Json(await CompanionGetAsync(await EffectiveSettingsAsync(ctx.RequestAborted), "validation", ctx.RequestAborted), Json); }
+            catch (Exception ex) { return Results.Json(new { state = "failed", error = ex.Message }, Json); }
+        }).RequireCovePermission("system.settings.write");
+        MapPostResult(endpoints, "/api/ext/pmv/validation", async (HttpContext ctx) =>
+        {
+            try
+            {
+                using var request = NewRequest(HttpMethod.Post, await EffectiveSettingsAsync(ctx.RequestAborted), "validation");
+                using var response = await _http.SendAsync(request, ctx.RequestAborted);
+                response.EnsureSuccessStatusCode();
+                return Results.Json(await response.Content.ReadFromJsonAsync<JsonElement>(Json, ctx.RequestAborted), Json);
+            }
+            catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
+        }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/audio", async (HttpContext ctx) =>
         {
             var q = ctx.Request.Query["q"].ToString();
@@ -137,8 +192,11 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         MapPostResult(endpoints, "/api/ext/pmv/create", async (HttpContext ctx) =>
         {
             var request = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
-            var settings = await SettingsAsync(ctx.RequestAborted);
-            if (string.IsNullOrWhiteSpace(settings.OutputFolder)) return Results.BadRequest(new { message = "Set an output folder first." });
+            if (string.IsNullOrWhiteSpace((await SettingsAsync(ctx.RequestAborted)).OutputFolder))
+                return Results.BadRequest(new { message = "Set an output folder first." });
+            PmvSettings settings;
+            try { settings = await EffectiveSettingsAsync(ctx.RequestAborted); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
             if (string.IsNullOrWhiteSpace(settings.CompanionToken)) return Results.BadRequest(new { message = "Set the companion token first." });
             await using var scope = _scopes!.CreateAsyncScope();
             var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;
@@ -301,12 +359,39 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private async Task<PmvSettings> SettingsAsync(CancellationToken ct)
     {
         var raw = _store is null ? null : await _store.GetAsync("settings", ct);
-        try { return raw is null ? new() : JsonSerializer.Deserialize<PmvSettings>(raw, Json) ?? new(); }
-        catch { return new(); }
+        if (raw is null) return new PmvSettings { CompanionMode = LocalCompanion.IsSupported ? "auto" : "external" };
+        try
+        {
+            var settings = JsonSerializer.Deserialize<PmvSettings>(raw, Json) ?? new();
+            using var document = JsonDocument.Parse(raw);
+            if (!document.RootElement.TryGetProperty("companionMode", out _))
+                settings.CompanionMode = LocalCompanion.IsSupported
+                    && settings.PathMappings.Count == 0
+                    && Uri.TryCreate(settings.CompanionUrl, UriKind.Absolute, out var legacyUri)
+                    && legacyUri.IsLoopback ? "auto" : "external";
+            return settings;
+        }
+        catch { return new PmvSettings { CompanionMode = LocalCompanion.IsSupported ? "auto" : "external" }; }
     }
-    private static PmvSettings PublicSettings(PmvSettings settings)
+
+    private async Task<PmvSettings> EffectiveSettingsAsync(CancellationToken ct)
     {
-        settings.CompanionConfigured = !string.IsNullOrWhiteSpace(settings.CompanionToken);
+        var settings = await SettingsAsync(ct);
+        if (settings.CompanionMode != "auto") return settings;
+        if (_local is null) throw new InvalidOperationException("Local companion control is unavailable.");
+        var status = await _local.EnsureRunningAsync(ct);
+        var connection = _local.Connection;
+        if (connection is null) throw new InvalidOperationException(status.Error ?? "The local companion did not start.");
+        settings.CompanionUrl = connection.Value.Url;
+        settings.CompanionToken = connection.Value.Token;
+        settings.PathMappings = [];
+        return settings;
+    }
+
+    private PmvSettings PublicSettings(PmvSettings settings)
+    {
+        settings.CompanionConfigured = settings.CompanionMode == "auto"
+            ? _local?.Connection is not null : !string.IsNullOrWhiteSpace(settings.CompanionToken);
         settings.CompanionToken = "";
         return settings;
     }

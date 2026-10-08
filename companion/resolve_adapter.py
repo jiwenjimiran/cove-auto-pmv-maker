@@ -36,7 +36,7 @@ def connect(require_validation=True):
         except (OSError, ValueError):
             validated = {}
         if validated.get("version") != version or validated.get("product") != product:
-            raise RuntimeError(f"Resolve {version} needs the PMV render smoke test. Run python companion/smoke.py in the signed-in session.")
+            raise RuntimeError(f"Resolve {version} needs the PMV render compatibility check. Run it from Auto PMV Maker settings in Cove.")
     return resolve
 
 

@@ -27,8 +27,18 @@ try
     if (defaultsJson.RootElement.GetProperty("defaults").GetProperty("layout").GetString() != "three-pane")
         throw new Exception("Defaults endpoint did not return JSON.");
 
+    using var validation = await client.GetAsync(address + "/api/ext/pmv/validation");
+    using var validationJson = await ReadJson(validation, HttpStatusCode.OK);
+    if (validationJson.RootElement.GetProperty("state").GetString() != "failed")
+        throw new Exception("Validation endpoint did not return its error state.");
+
+    using var startValidation = await client.PostAsync(address + "/api/ext/pmv/validation", null);
+    using var startJson = await ReadJson(startValidation, HttpStatusCode.BadRequest);
+    if (!startJson.RootElement.TryGetProperty("message", out _))
+        throw new Exception("Validation start endpoint did not return JSON.");
+
     using var put = await client.PutAsJsonAsync(address + "/api/ext/pmv/settings",
-        new PmvSettings { CompanionUrl = "invalid" });
+        new PmvSettings { CompanionMode = "external", CompanionUrl = "invalid" });
     using var putJson = await ReadJson(put, HttpStatusCode.BadRequest);
     if (!putJson.RootElement.GetProperty("message").GetString()!.Contains("companion URL"))
         throw new Exception("Settings validation error was missing.");

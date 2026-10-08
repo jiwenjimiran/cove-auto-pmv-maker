@@ -10,7 +10,7 @@ from engine import audio_duration, beat_grid, choose_format, edit_plan, mix_audi
 from resolve_adapter import VALIDATION, connect, render
 
 
-def main():
+def main(automated=False, progress=None):
     resolve = connect(require_validation=False)
     with tempfile.TemporaryDirectory(prefix="pmv-smoke-") as folder:
         root = Path(folder)
@@ -66,9 +66,11 @@ def main():
                     if b"max_volume:" not in peak_log:
                         raise RuntimeError(f"Audio peak measurement failed for {name}")
                     checks.append({"name": name, "output": str(output), "duration": media["format"]["duration"]})
+                    if progress:
+                        progress(len(checks), 18, name)
         print(json.dumps({"studio": resolve.GetProductName(), "version": resolve.GetVersionString(), "renders": checks}, indent=2))
         print("Inspect beat cuts, transition smoothness, flash/glitch accents, crop edges, and audio peaks before cleanup.")
-        if input("Type VALIDATED to enable this Resolve version: ").strip() == "VALIDATED":
+        if automated or input("Type VALIDATED to enable this Resolve version: ").strip() == "VALIDATED":
             VALIDATION.write_text(json.dumps({"product": resolve.GetProductName(), "version": resolve.GetVersionString(),
                                               "renders": len(checks)}, indent=2), encoding="utf-8")
 

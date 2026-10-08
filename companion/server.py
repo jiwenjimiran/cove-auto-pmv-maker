@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shutil
@@ -21,6 +22,24 @@ JOBS = {}
 LOCK = threading.Lock()
 RENDER_LOCK = threading.Lock()
 TOKEN = ""
+VALIDATION_STATE = {"state": "idle", "progress": 0, "message": "Not run", "error": None}
+
+
+def validate_resolve():
+    """Exercise every style, layout, and source-audio combination in Resolve."""
+    with RENDER_LOCK:
+        try:
+            VALIDATION_STATE.update(state="running", progress=0, message="Preparing Resolve fixtures", error=None)
+            from smoke import main as smoke_main
+
+            def update(done, total, name):
+                VALIDATION_STATE.update(progress=round(done * 100 / total), message=f"Checked {done}/{total}: {name}")
+
+            smoke_main(automated=True, progress=update)
+            VALIDATION_STATE.update(state="complete", progress=100, message="Resolve compatibility check passed")
+        except Exception as exc:
+            VALIDATION_STATE.update(state="failed", error=str(exc), message="Resolve compatibility check failed")
+            traceback.print_exc()
 
 
 def health():
@@ -36,6 +55,21 @@ def health():
         return {"ok": True, "product": product, "version": version, "ytDlp": shutil.which("yt-dlp") is not None}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def watch_parent(pid):
+    """Exit a managed companion when its Cove desktop process exits unexpectedly."""
+    if os.name != "nt" or pid <= 0:
+        return
+    kernel = ctypes.windll.kernel32
+    handle = kernel.OpenProcess(0x00100000, False, pid)
+    if not handle:
+        return
+    try:
+        kernel.WaitForSingleObject(handle, 0xFFFFFFFF)
+    finally:
+        kernel.CloseHandle(handle)
+    os._exit(0)
 
 
 def preflight(payload):
@@ -146,8 +180,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        if path == "/ready":
+            return self.reply(200, {"ok": True})
         if path == "/health":
             return self.reply(200, health())
+        if path == "/validation":
+            return self.reply(200, dict(VALIDATION_STATE))
         if path.startswith("/jobs/"):
             state = JOBS.get(path.split("/")[-1])
             if state is None:
@@ -159,6 +197,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        if path == "/validation":
+            with LOCK:
+                if VALIDATION_STATE["state"] in ("queued", "running"):
+                    return self.reply(200, dict(VALIDATION_STATE))
+                VALIDATION_STATE.update(state="queued", progress=0, message="Waiting for render queue", error=None)
+                threading.Thread(target=validate_resolve, daemon=True).start()
+            return self.reply(202, dict(VALIDATION_STATE))
         if path not in ("/jobs", "/preflight"):
             return self.reply(404, {"error": "Not found"})
         try:
@@ -196,9 +241,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--parent-pid", type=int, default=0)
     parser.add_argument("--token", default=os.environ.get("COVE_PMV_TOKEN", ""))
     args = parser.parse_args()
     if len(args.token) < 24:
         parser.error("Provide a random token of at least 24 characters via --token or COVE_PMV_TOKEN")
     TOKEN = args.token
+    if args.parent_pid:
+        threading.Thread(target=watch_parent, args=(args.parent_pid,), daemon=True).start()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()

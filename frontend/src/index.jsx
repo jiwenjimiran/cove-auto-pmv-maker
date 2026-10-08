@@ -88,29 +88,51 @@ export function PmvSettingsPanel() {
   const [settings, setSettings, error, setError] = useSettings();
   const [message, setMessage] = useState("");
   const [health, setHealth] = useState(null);
+  const [local, setLocal] = useState(null);
+  const [validation, setValidation] = useState(null);
   const [mappingText, setMappingText] = useState("[]");
   const [mappingValid, setMappingValid] = useState(true);
   useEffect(() => { if (settings) setMappingText(JSON.stringify(settings.pathMappings || [], null, 2)); }, [!!settings]);
+  useEffect(() => { if (settings?.companionMode === "auto") api("/local-companion").then(setLocal).catch(e => setError(e.message)); }, [settings?.companionMode]);
+  useEffect(() => {
+    if (!settings) return;
+    const refresh = () => api("/validation").then(setValidation).catch(e => setError(e.message));
+    refresh();
+    const timer = window.setInterval(refresh, 3000);
+    return () => window.clearInterval(timer);
+  }, [!!settings]);
   if (!settings) return <div className="pmv-settings">{error || "Loading PMV settings…"}</div>;
   const set = (key, value) => setSettings(current => ({ ...current, [key]: value }));
   const defaults = { ...defaultOptions, ...settings.defaults };
+  const automatic = settings.companionMode === "auto";
   return <div className="pmv-settings">
     <h3>Auto PMV Maker</h3>
-    <p>The companion runs beside Resolve Studio in your signed-in Windows session. It is included in this extension ZIP.</p>
-    <div className="pmv-actions"><button type="button" onClick={async () => { try { await downloadCompanion(); setMessage("Companion ZIP downloaded."); } catch (e) { setError(e.message); } }}>Download Windows companion</button></div>
-    <small>Extract the ZIP and run Start Companion.cmd. Use Start Companion Docker.cmd when Cove runs in Docker. Copy the URL and token shown by the launcher into the fields below.</small>
+    <label>Connection<select value={settings.companionMode || "auto"} onChange={e => set("companionMode", e.target.value)}><option value="auto">Automatic (native Windows Cove)</option><option value="external">External (Docker or another PC)</option></select></label>
+    {automatic ? <>
+      <p>Cove starts the bundled engine in your Windows desktop session. No download, launcher, URL, or token is needed.</p>
+      <p role="status">Engine: {local ? local.running ? "running" : local.error || "stopped" : "checking…"}</p>
+      <div className="pmv-actions"><button type="button" onClick={async () => { try { setLocal(await api("/local-companion/start", "POST")); setError(""); } catch (e) { setError(e.message); } }}>Retry engine</button></div>
+    </> : <details open><summary>External companion setup</summary>
+      <p>For Cove in Docker, run the bundled companion on the Windows desktop and connect it here.</p>
+      <div className="pmv-actions"><button type="button" onClick={async () => { try { await downloadCompanion(); setMessage("Companion ZIP downloaded."); } catch (e) { setError(e.message); } }}>Download Windows companion</button></div>
+      <small>Extract the ZIP, run Start Companion Docker.cmd, then enter the displayed URL and token.</small>
+      <div className="pmv-grid">
+        {[["companionUrl", "Companion URL"], ["companionToken", "Companion token"]].map(([key, label]) => <label key={key}>{label}<input type={key === "companionToken" ? "password" : "text"} value={settings[key] || ""} onChange={e => set(key, e.target.value)} /></label>)}
+      </div>
+      {settings.companionConfigured && <small>A companion token is saved. Leave the field blank to keep it.</small>}
+      <label>Container → Windows path mappings (JSON)<textarea rows="4" value={mappingText} onChange={e => {
+        setMappingText(e.target.value);
+        try { const value = JSON.parse(e.target.value); if (!Array.isArray(value)) throw new Error(); set("pathMappings", value); setMappingValid(true); setError(""); }
+        catch { setMappingValid(false); setError("Path mappings must be a JSON array."); }
+      }} /></label>
+    </details>}
     <div className="pmv-grid">
-      {[["companionUrl", "Companion URL"], ["companionToken", "Companion token"], ["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => <label key={key}>{label}<input type={key === "companionToken" ? "password" : "text"} value={settings[key] || ""} onChange={e => set(key, e.target.value)} /></label>)}
+      {[["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => <label key={key}>{label}<input type="text" value={settings[key] || ""} onChange={e => set(key, e.target.value)} /></label>)}
     </div>
-    {settings.companionConfigured && <small>A companion token is saved. Leave the field blank to keep it.</small>}
-    <label>Container → Windows path mappings (JSON)<textarea rows="4" value={mappingText} onChange={e => {
-      setMappingText(e.target.value);
-      try { const value = JSON.parse(e.target.value); if (!Array.isArray(value)) throw new Error(); set("pathMappings", value); setMappingValid(true); setError(""); }
-      catch { setMappingValid(false); setError("Path mappings must be a JSON array."); }
-    }} /></label>
     <h4>Job defaults</h4><OptionForm options={defaults} setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)} />
-    <div className="pmv-actions"><button onClick={async () => { try { setHealth(await api("/health")); } catch (e) { setError(e.message); } }}>Check Resolve</button><button disabled={!mappingValid} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></div>
+    <div className="pmv-actions"><button onClick={async () => { try { setHealth(await api("/health")); } catch (e) { setError(e.message); } }}>Check Resolve</button><button disabled={validation?.state === "queued" || validation?.state === "running"} onClick={async () => { try { setValidation(await api("/validation", "POST")); setError(""); } catch (e) { setError(e.message); } }}>Run Resolve compatibility check</button><button disabled={!automatic && !mappingValid} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); if (automatic) setLocal(await api("/local-companion")); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></div>
     {health && <p role="status">{health.ok ? `${health.product} ${health.version} ready` : health.error}</p>}
+    {validation && validation.state !== "idle" && <p role="status">Compatibility check: {validation.message}{validation.error ? ` — ${validation.error}` : ""}</p>}
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
   </div>;
 }

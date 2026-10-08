@@ -6,6 +6,7 @@ public sealed record PathMapping(string ContainerPrefix, string HostPrefix);
 
 public sealed class PmvSettings
 {
+    public string CompanionMode { get; set; } = "auto";
     public string CompanionUrl { get; set; } = "http://127.0.0.1:8765";
     public string CompanionToken { get; set; } = "";
     public bool CompanionConfigured { get; set; }

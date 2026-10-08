@@ -93,22 +93,42 @@ function PmvSettingsPanel() {
   const [settings, setSettings, error, setError] = useSettings();
   const [message, setMessage] = useState("");
   const [health, setHealth] = useState(null);
+  const [local, setLocal] = useState(null);
+  const [validation, setValidation] = useState(null);
   const [mappingText, setMappingText] = useState("[]");
   const [mappingValid, setMappingValid] = useState(true);
   useEffect(() => {
     if (settings) setMappingText(JSON.stringify(settings.pathMappings || [], null, 2));
   }, [!!settings]);
+  useEffect(() => {
+    if (settings?.companionMode === "auto") api("/local-companion").then(setLocal).catch((e) => setError(e.message));
+  }, [settings?.companionMode]);
+  useEffect(() => {
+    if (!settings) return;
+    const refresh = () => api("/validation").then(setValidation).catch((e) => setError(e.message));
+    refresh();
+    const timer = window.setInterval(refresh, 3e3);
+    return () => window.clearInterval(timer);
+  }, [!!settings]);
   if (!settings) return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, error || "Loading PMV settings\u2026");
   const set = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
   const defaults = { ...defaultOptions, ...settings.defaults };
-  return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, /* @__PURE__ */ React.createElement("h3", null, "Auto PMV Maker"), /* @__PURE__ */ React.createElement("p", null, "The companion runs beside Resolve Studio in your signed-in Windows session. It is included in this extension ZIP."), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+  const automatic = settings.companionMode === "auto";
+  return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, /* @__PURE__ */ React.createElement("h3", null, "Auto PMV Maker"), /* @__PURE__ */ React.createElement("label", null, "Connection", /* @__PURE__ */ React.createElement("select", { value: settings.companionMode || "auto", onChange: (e) => set("companionMode", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "auto" }, "Automatic (native Windows Cove)"), /* @__PURE__ */ React.createElement("option", { value: "external" }, "External (Docker or another PC)"))), automatic ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", null, "Cove starts the bundled engine in your Windows desktop session. No download, launcher, URL, or token is needed."), /* @__PURE__ */ React.createElement("p", { role: "status" }, "Engine: ", local ? local.running ? "running" : local.error || "stopped" : "checking\u2026"), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+    try {
+      setLocal(await api("/local-companion/start", "POST"));
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  } }, "Retry engine"))) : /* @__PURE__ */ React.createElement("details", { open: true }, /* @__PURE__ */ React.createElement("summary", null, "External companion setup"), /* @__PURE__ */ React.createElement("p", null, "For Cove in Docker, run the bundled companion on the Windows desktop and connect it here."), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
     try {
       await downloadCompanion();
       setMessage("Companion ZIP downloaded.");
     } catch (e) {
       setError(e.message);
     }
-  } }, "Download Windows companion")), /* @__PURE__ */ React.createElement("small", null, "Extract the ZIP and run Start Companion.cmd. Use Start Companion Docker.cmd when Cove runs in Docker. Copy the URL and token shown by the launcher into the fields below."), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["companionUrl", "Companion URL"], ["companionToken", "Companion token"], ["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => /* @__PURE__ */ React.createElement("label", { key }, label, /* @__PURE__ */ React.createElement("input", { type: key === "companionToken" ? "password" : "text", value: settings[key] || "", onChange: (e) => set(key, e.target.value) })))), settings.companionConfigured && /* @__PURE__ */ React.createElement("small", null, "A companion token is saved. Leave the field blank to keep it."), /* @__PURE__ */ React.createElement("label", null, "Container \u2192 Windows path mappings (JSON)", /* @__PURE__ */ React.createElement("textarea", { rows: "4", value: mappingText, onChange: (e) => {
+  } }, "Download Windows companion")), /* @__PURE__ */ React.createElement("small", null, "Extract the ZIP, run Start Companion Docker.cmd, then enter the displayed URL and token."), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["companionUrl", "Companion URL"], ["companionToken", "Companion token"]].map(([key, label]) => /* @__PURE__ */ React.createElement("label", { key }, label, /* @__PURE__ */ React.createElement("input", { type: key === "companionToken" ? "password" : "text", value: settings[key] || "", onChange: (e) => set(key, e.target.value) })))), settings.companionConfigured && /* @__PURE__ */ React.createElement("small", null, "A companion token is saved. Leave the field blank to keep it."), /* @__PURE__ */ React.createElement("label", null, "Container \u2192 Windows path mappings (JSON)", /* @__PURE__ */ React.createElement("textarea", { rows: "4", value: mappingText, onChange: (e) => {
     setMappingText(e.target.value);
     try {
       const value = JSON.parse(e.target.value);
@@ -120,21 +140,29 @@ function PmvSettingsPanel() {
       setMappingValid(false);
       setError("Path mappings must be a JSON array.");
     }
-  } })), /* @__PURE__ */ React.createElement("h4", null, "Job defaults"), /* @__PURE__ */ React.createElement(OptionForm, { options: defaults, setOptions: (value) => set("defaults", typeof value === "function" ? value(defaults) : value) }), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { onClick: async () => {
+  } }))), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => /* @__PURE__ */ React.createElement("label", { key }, label, /* @__PURE__ */ React.createElement("input", { type: "text", value: settings[key] || "", onChange: (e) => set(key, e.target.value) })))), /* @__PURE__ */ React.createElement("h4", null, "Job defaults"), /* @__PURE__ */ React.createElement(OptionForm, { options: defaults, setOptions: (value) => set("defaults", typeof value === "function" ? value(defaults) : value) }), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { onClick: async () => {
     try {
       setHealth(await api("/health"));
     } catch (e) {
       setError(e.message);
     }
-  } }, "Check Resolve"), /* @__PURE__ */ React.createElement("button", { disabled: !mappingValid, onClick: async () => {
+  } }, "Check Resolve"), /* @__PURE__ */ React.createElement("button", { disabled: validation?.state === "queued" || validation?.state === "running", onClick: async () => {
+    try {
+      setValidation(await api("/validation", "POST"));
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  } }, "Run Resolve compatibility check"), /* @__PURE__ */ React.createElement("button", { disabled: !automatic && !mappingValid, onClick: async () => {
     try {
       setSettings(await api("/settings", "PUT", settings));
+      if (automatic) setLocal(await api("/local-companion"));
       setMessage("Settings saved.");
       setError("");
     } catch (e) {
       setError(e.message);
     }
-  } }, "Save settings")), health && /* @__PURE__ */ React.createElement("p", { role: "status" }, health.ok ? `${health.product} ${health.version} ready` : health.error), error && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error), message && /* @__PURE__ */ React.createElement("p", { role: "status" }, message));
+  } }, "Save settings")), health && /* @__PURE__ */ React.createElement("p", { role: "status" }, health.ok ? `${health.product} ${health.version} ready` : health.error), validation && validation.state !== "idle" && /* @__PURE__ */ React.createElement("p", { role: "status" }, "Compatibility check: ", validation.message, validation.error ? ` \u2014 ${validation.error}` : ""), error && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error), message && /* @__PURE__ */ React.createElement("p", { role: "status" }, message));
 }
 function PmvDialog({ context, close }) {
   const [settings, , settingsError] = useSettings("/defaults");
