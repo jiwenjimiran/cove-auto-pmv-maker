@@ -1,16 +1,25 @@
 // src/index.jsx
 import React from "@cove/runtime/react";
+import { extensionFetch } from "@cove/runtime/api";
 var { useEffect, useState } = React;
 var base = "/api/ext/pmv";
 async function api(path, method = "GET", body) {
-  const response = await fetch(base + path, {
+  const response = await extensionFetch(base + path, {
     method,
-    credentials: "same-origin",
     headers: body ? { "Content-Type": "application/json" } : {},
     body: body ? JSON.stringify(body) : void 0
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.message || result.error || `Request failed (${response.status})`);
+  const raw = await response.text();
+  let result = null;
+  if (raw) {
+    try {
+      result = JSON.parse(raw);
+    } catch {
+      throw new Error(`Cove returned an invalid response for ${path} (${response.status}).`);
+    }
+  }
+  if (!response.ok) throw new Error(result?.message || result?.error || `Request failed (${response.status})`);
+  if (result === null) throw new Error(`Cove returned an empty response for ${path} (${response.status}).`);
   return result;
 }
 function openPmv(_action, payload) {
