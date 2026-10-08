@@ -3,6 +3,7 @@ import React from "@cove/runtime/react";
 import { extensionFetch } from "@cove/runtime/api";
 var { useEffect, useState } = React;
 var base = "/api/ext/pmv";
+var companionAsset = "/api/extensions/assets/io.github.jiwenjimiran.auto-pmv-maker/companion/AutoPmvMakerCompanion.zip";
 async function api(path, method = "GET", body) {
   const response = await extensionFetch(base + path, {
     method,
@@ -21,6 +22,20 @@ async function api(path, method = "GET", body) {
   if (!response.ok) throw new Error(result?.message || result?.error || `Request failed (${response.status})`);
   if (result === null) throw new Error(`Cove returned an empty response for ${path} (${response.status}).`);
   return result;
+}
+async function downloadCompanion() {
+  const response = await extensionFetch(companionAsset);
+  if (!response.ok) throw new Error(`Companion download failed (${response.status}).`);
+  const archive = await response.blob();
+  if (!archive.size) throw new Error("Cove returned an empty companion ZIP.");
+  const url = URL.createObjectURL(archive);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "AutoPmvMakerCompanion.zip";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 6e4);
 }
 function openPmv(_action, payload) {
   window.dispatchEvent(new CustomEvent("pmvmaker:open", { detail: payload }));
@@ -86,7 +101,14 @@ function PmvSettingsPanel() {
   if (!settings) return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, error || "Loading PMV settings\u2026");
   const set = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
   const defaults = { ...defaultOptions, ...settings.defaults };
-  return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, /* @__PURE__ */ React.createElement("h3", null, "Auto PMV Maker"), /* @__PURE__ */ React.createElement("p", null, "Run the companion in the signed-in Windows session where Resolve Studio is open."), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["companionUrl", "Companion URL"], ["companionToken", "Companion token"], ["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => /* @__PURE__ */ React.createElement("label", { key }, label, /* @__PURE__ */ React.createElement("input", { type: key === "companionToken" ? "password" : "text", value: settings[key] || "", onChange: (e) => set(key, e.target.value) })))), settings.companionConfigured && /* @__PURE__ */ React.createElement("small", null, "A companion token is saved. Leave the field blank to keep it."), /* @__PURE__ */ React.createElement("label", null, "Container \u2192 Windows path mappings (JSON)", /* @__PURE__ */ React.createElement("textarea", { rows: "4", value: mappingText, onChange: (e) => {
+  return /* @__PURE__ */ React.createElement("div", { className: "pmv-settings" }, /* @__PURE__ */ React.createElement("h3", null, "Auto PMV Maker"), /* @__PURE__ */ React.createElement("p", null, "The companion runs beside Resolve Studio in your signed-in Windows session. It is included in this extension ZIP."), /* @__PURE__ */ React.createElement("div", { className: "pmv-actions" }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: async () => {
+    try {
+      await downloadCompanion();
+      setMessage("Companion ZIP downloaded.");
+    } catch (e) {
+      setError(e.message);
+    }
+  } }, "Download Windows companion")), /* @__PURE__ */ React.createElement("small", null, "Extract the ZIP and run Start Companion.cmd. Use Start Companion Docker.cmd when Cove runs in Docker. Copy the URL and token shown by the launcher into the fields below."), /* @__PURE__ */ React.createElement("div", { className: "pmv-grid" }, [["companionUrl", "Companion URL"], ["companionToken", "Companion token"], ["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => /* @__PURE__ */ React.createElement("label", { key }, label, /* @__PURE__ */ React.createElement("input", { type: key === "companionToken" ? "password" : "text", value: settings[key] || "", onChange: (e) => set(key, e.target.value) })))), settings.companionConfigured && /* @__PURE__ */ React.createElement("small", null, "A companion token is saved. Leave the field blank to keep it."), /* @__PURE__ */ React.createElement("label", null, "Container \u2192 Windows path mappings (JSON)", /* @__PURE__ */ React.createElement("textarea", { rows: "4", value: mappingText, onChange: (e) => {
     setMappingText(e.target.value);
     try {
       const value = JSON.parse(e.target.value);

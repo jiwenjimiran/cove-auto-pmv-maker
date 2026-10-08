@@ -4,6 +4,7 @@ import "./style.css";
 
 const { useEffect, useState } = React;
 const base = "/api/ext/pmv";
+const companionAsset = "/api/extensions/assets/io.github.jiwenjimiran.auto-pmv-maker/companion/AutoPmvMakerCompanion.zip";
 async function api(path, method = "GET", body) {
   const response = await extensionFetch(base + path, { method,
     headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
@@ -16,6 +17,21 @@ async function api(path, method = "GET", body) {
   if (!response.ok) throw new Error(result?.message || result?.error || `Request failed (${response.status})`);
   if (result === null) throw new Error(`Cove returned an empty response for ${path} (${response.status}).`);
   return result;
+}
+
+async function downloadCompanion() {
+  const response = await extensionFetch(companionAsset);
+  if (!response.ok) throw new Error(`Companion download failed (${response.status}).`);
+  const archive = await response.blob();
+  if (!archive.size) throw new Error("Cove returned an empty companion ZIP.");
+  const url = URL.createObjectURL(archive);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "AutoPmvMakerCompanion.zip";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 export function openPmv(_action, payload) {
@@ -80,7 +96,9 @@ export function PmvSettingsPanel() {
   const defaults = { ...defaultOptions, ...settings.defaults };
   return <div className="pmv-settings">
     <h3>Auto PMV Maker</h3>
-    <p>Run the companion in the signed-in Windows session where Resolve Studio is open.</p>
+    <p>The companion runs beside Resolve Studio in your signed-in Windows session. It is included in this extension ZIP.</p>
+    <div className="pmv-actions"><button type="button" onClick={async () => { try { await downloadCompanion(); setMessage("Companion ZIP downloaded."); } catch (e) { setError(e.message); } }}>Download Windows companion</button></div>
+    <small>Extract the ZIP and run Start Companion.cmd. Use Start Companion Docker.cmd when Cove runs in Docker. Copy the URL and token shown by the launcher into the fields below.</small>
     <div className="pmv-grid">
       {[["companionUrl", "Companion URL"], ["companionToken", "Companion token"], ["outputFolder", "Output folder"], ["projectFolder", "Project folder (optional)"], ["musicFolder", "Music folder"]].map(([key, label]) => <label key={key}>{label}<input type={key === "companionToken" ? "password" : "text"} value={settings[key] || ""} onChange={e => set(key, e.target.value)} /></label>)}
     </div>
