@@ -682,3 +682,45 @@
     flex-direction: column;
   }
 }
+.pmv-face-picker {
+  margin: 1rem 0;
+}
+.pmv-face-picker p {
+  margin: .4rem 0 .8rem;
+  color: var(--text-secondary, #aeb4c0);
+}
+.pmv-face-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin: .7rem 0;
+  flex-wrap: wrap;
+}
+.pmv-face-actions small {
+  margin-left: auto;
+}
+.pmv-face-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  max-height: 9rem;
+  overflow: auto;
+  padding: .3rem;
+}
+.pmv-face-list button {
+  border: 1px solid #5e6470;
+  border-radius: 999px;
+  padding: .35rem .7rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.pmv-face-list button.selected {
+  background: #24769a;
+  border-color: #56b2cf;
+  color: white;
+}
+.pmv-face-list button:disabled {
+  opacity: .48;
+  cursor: not-allowed;
+}

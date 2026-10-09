@@ -8,6 +8,7 @@ import random
 import re
 import statistics
 import subprocess
+import sys
 import tempfile
 import wave
 from dataclasses import dataclass
@@ -65,30 +66,9 @@ def choose_format(sources, layout, options):
     return width, height, fps
 
 
-def beat_grid(song, start, end, cancel=None):
-    # Envelope from a mono 8 kHz analysis stream, about 16 KB per second.
-    out, _ = run(["ffmpeg", "-v", "error", "-ss", str(start), "-to", str(end), "-i", str(song),
-                  "-ac", "1", "-ar", "8000", "-f", "s16le", "-"], cancel=cancel)
-    import array
-    samples = array.array("h")
-    samples.frombytes(out)
-    step = 1600  # 0.2 seconds
-    rms = [math.sqrt(sum(v * v for v in samples[i:i + step]) / max(1, len(samples[i:i + step])))
-           for i in range(0, len(samples), step)]
-    if not rms:
-        return [0.0, end - start]
-    onset = [0.0] + [max(0.0, rms[i] - rms[i - 1]) for i in range(1, len(rms))]
-    baseline = statistics.median(onset)
-    peaks = []
-    for i in range(2, len(onset) - 2):
-        if onset[i] >= max(onset[i - 2:i + 3]) and onset[i] > max(100, baseline * 1.5):
-            time = i * 0.2
-            if not peaks or time - peaks[-1] >= 0.3:
-                peaks.append(time)
-    if len(peaks) < 8:
-        interval = max(0.5, min(2.0, (end - start) / 32))
-        peaks = [i * interval for i in range(1, int((end - start) / interval))]
-    return [0.0] + [p for p in peaks if 0 < p < end - start] + [end - start]
+def beat_grid(song, start, end, cancel=None, meter="auto"):
+    from music_analysis import analyze_music
+    return analyze_music(song, start, end, run, cancel, meter)
 
 
 def shot_boundaries(path, duration, seek=0, cancel=None):
@@ -139,6 +119,8 @@ class Clip:
     accent: bool
     crop_center: float = 0.5
     face_track: tuple[tuple[float, float], ...] = ()
+    matched_performer_id: int | None = None
+    mirrored: bool = False
 
 
 def option_range(options, key, phase, default):
@@ -295,8 +277,10 @@ def output_stem(sources, clips, launch_name=None):
         return "PMVMAKER_" + sanitize(used[0].get("studioName") or "Multi")
     tag_sets = []
     for source in used:
-        ids = {c.segment_id for c in clips if c.video_id == int(source["id"])}
-        tag_sets.append({s.get("tagName") for s in source.get("segments") or [] if s.get("id") in ids and s.get("tagName")})
+        source_clips = [c for c in clips if c.video_id == int(source["id"])]
+        tag_sets.append({s.get("tagName") for s in source.get("segments") or [] if s.get("tagName")
+                         and any(c.source_start < float(s["end"]) and c.source_start + c.duration > float(s["start"])
+                                 for c in source_clips)})
     common_tags = set.intersection(*tag_sets) if tag_sets else set()
     return "PMVMAKER_" + sanitize("_".join(sorted(common_tags)) if common_tags else "Multi")
 
@@ -325,7 +309,7 @@ def prepare_audio(selection, temp, cancel=None):
         if not re.match(r"^https://(www\.)?(youtube\.com|youtu\.be)/", url, re.I):
             raise ValueError("Only HTTPS YouTube URLs are accepted")
         target = str(Path(temp) / "download.%(ext)s")
-        run(["yt-dlp", "--no-playlist", "-x", "--audio-format", "wav", "-o", target, url], cancel=cancel)
+        run([sys.executable, "-m", "yt_dlp", "--no-playlist", "-x", "--audio-format", "wav", "-o", target, url], cancel=cancel)
         matches = list(Path(temp).glob("download.*"))
         if len(matches) != 1:
             raise RuntimeError("yt-dlp produced no audio file")
@@ -344,6 +328,9 @@ def mix_audio(song, clips, options, temp, duration, trim_start=0, cancel=None):
     filters = ["[0:a]aresample=48000,volume=0.78,atrim=duration=%f,asetpts=PTS-STARTPTS[song]" % duration]
     inputs = ["-ss", str(trim_start), "-t", str(duration), "-i", song]
     selected = [] if mode == "muted" else [c for c in clips if mode == "all" or c.pane == 0 and c.accent]
+    # A mirrored outside pair is one source event, not two audio accents.
+    selected = list({(c.path, round(c.source_start, 3), round(c.record_start, 3)): c
+                     for c in selected if not c.mirrored}.values())
     source_gain = 0.18 if mode == "mixed" else 0.3 / (max((c.pane for c in clips), default=0) + 1)
     audio_paths = {c.path for c in selected}
     has_audio = {path: any(stream.get("codec_type") == "audio" for stream in probe(path).get("streams", []))

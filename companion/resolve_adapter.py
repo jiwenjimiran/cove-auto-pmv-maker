@@ -14,7 +14,7 @@ from engine import option_range, probe, run
 
 MODULES = Path(os.environ.get("RESOLVE_SCRIPT_API", r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting")) / "Modules"
 VALIDATION = Path(__file__).with_name("validated-version.json")
-VALIDATION_SCHEMA = 2
+VALIDATION_SCHEMA = 3
 sys.path.insert(0, str(MODULES))
 
 
@@ -248,11 +248,14 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 pane_width = width / 3
                 source_width, source_height = source_sizes[clip.path]
                 fill_scale = max(width / source_width, height / source_height)
-                pane_scale = max(pane_width / source_width, height / source_height)
+                pane_scale = (height / source_height if options.get("selectionMode") == "face"
+                              else max(pane_width / source_width, height / source_height))
                 base_zoom = pane_scale / fill_scale
                 visible_width = source_width * pane_scale
                 side_crop = max(0.0, (visible_width - pane_width) / 2)
                 desired_center = center_at(clip, offset + length / 2)
+                if clip.mirrored:
+                    desired_center = 1.0 - desired_center
                 shift = max(-side_crop, min(side_crop, (desired_center - 0.5) * visible_width))
                 set_property("Scaling", resolve.SCALE_FILL, "pane scaling")
                 set_property("ZoomX", base_zoom, "pane zoom X")
@@ -260,14 +263,17 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 set_property("Pan", (clip.pane - 1) * pane_width - shift, "pane position")
                 set_property("CropLeft", side_crop + shift, "left pane crop")
                 set_property("CropRight", side_crop - shift, "right pane crop")
+                if clip.mirrored:
+                    set_property("FlipX", True, "mirror repeated source")
             else:
                 set_property("Scaling", resolve.SCALE_FILL, "full-screen scaling")
-            if style == "high-energy" and clip.accent:
+            face_slice = pane_count == 3 and options.get("selectionMode") == "face"
+            if not face_slice and style == "high-energy" and clip.accent:
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.1 * motion_intensity)
                 set_property("ZoomX", zoom, "accent zoom X")
                 set_property("ZoomY", zoom, "accent zoom Y")
-            elif style == "cinematic":
+            elif not face_slice and style == "cinematic":
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.03 * motion_intensity)
                 set_property("ZoomX", zoom, "cinematic zoom X")

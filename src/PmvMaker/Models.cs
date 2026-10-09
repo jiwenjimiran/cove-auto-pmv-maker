@@ -20,8 +20,11 @@ public sealed class PmvSettings
     public string OutputFolder { get; set; } = "";
     public string ProjectFolder { get; set; } = "";
     public string MusicFolder { get; set; } = "";
+    public string DefaultAudioKind { get; set; } = "cove";
+    public string DefaultFaceGender { get; set; } = "female";
     public List<PathMapping> PathMappings { get; set; } = [];
     public int ColorDefaultsVersion { get; set; } = 1;
+    public int FaceDefaultsVersion { get; set; } = 1;
     public PmvOptions Defaults { get; set; } = new();
 }
 
@@ -29,8 +32,17 @@ public sealed class PmvOptions
 {
     public string Layout { get; set; } = "three-pane";
     public bool UseVerticalVideosOnly { get; set; }
-    public string SelectionMode { get; set; } = "center";
+    public string SelectionMode { get; set; } = "face";
     public bool KeepFaceCentered { get; set; } = true;
+    public bool MatchSelectedPerformers { get; set; } = true;
+    public double FaceSimilarityThreshold { get; set; } = 0.45;
+    public bool MirrorRepeatedSource { get; set; } = true;
+    public bool SampledClipsProgress { get; set; } = true;
+    public double MinimumTimestampSeconds { get; set; }
+    public double EndBufferSeconds { get; set; }
+    public bool CycleLongerClipIntoSegments { get; set; } = true;
+    public double RotatedClipLengthSeconds { get; set; } = 30;
+    public string BeatsPerBar { get; set; } = "auto";
     public string Style { get; set; } = "rhythmic-polish";
     public string SourceAudio { get; set; } = "mixed";
     public double PacingMin { get; set; } = 0.4;
@@ -85,6 +97,7 @@ public sealed class PmvRequest
     public SourceScope Scope { get; set; } = new();
     public AudioSelection Audio { get; set; } = new();
     public PmvOptions? Options { get; set; }
+    public List<int>? FacePerformerIds { get; set; }
 }
 
 public sealed record SourceVideo(int Id, string Path, double Duration, int Width, int Height, double Fps,
@@ -96,4 +109,6 @@ public sealed record ScopeResult(IReadOnlyList<SourceVideo> Videos, IReadOnlyLis
     string? LaunchName, string LaunchKind);
 
 public sealed record CompanionJob(string Id, string State, double Progress, string? Message,
-    string? OutputPath, int[]? UsedVideoIds, int[]? UsedSegmentIds, string? Error);
+    string? OutputPath, int[]? UsedVideoIds, int[]? UsedSegmentIds, string? Error,
+    int[]? MatchedPerformerIds = null);
+public sealed record FaceReference(int PerformerId, string ReferenceId);

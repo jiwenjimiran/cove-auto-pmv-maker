@@ -16,6 +16,30 @@ import server
 
 
 class CompanionApiTests(unittest.TestCase):
+    def test_face_reference_upload_is_authenticated_and_cleaned(self):
+        server.TOKEN = "a" * 32
+        listener = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=listener.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{listener.server_port}"
+        try:
+            with tempfile.TemporaryDirectory() as root, patch.object(server, "REFERENCE_ROOT", Path(root)):
+                headers = {"Authorization": "Bearer " + server.TOKEN, "X-PMV-Performer-Id": "42"}
+                with self.assertRaises(HTTPError) as denied:
+                    urlopen(Request(base + "/references", data=b"portrait", method="POST"), timeout=2)
+                self.assertEqual(401, denied.exception.code)
+                denied.exception.close()
+                reference_id = json.load(urlopen(Request(base + "/references", data=b"portrait", method="POST",
+                                                        headers=headers), timeout=2))["referenceId"]
+                self.assertEqual(b"portrait", (Path(root) / reference_id).read_bytes())
+                result = server.face_references([{"performerId": 42, "referenceId": reference_id}])
+                self.assertEqual(42, result[0]["performerId"])
+                urlopen(Request(base + "/references/" + reference_id, method="DELETE", headers=headers), timeout=2)
+                self.assertFalse((Path(root) / reference_id).exists())
+        finally:
+            listener.shutdown()
+            listener.server_close()
+
     def test_validation_runs_from_authenticated_api(self):
         server.TOKEN = "a" * 32
         server.VALIDATION_STATE.update(state="idle", progress=0, message="Not run", error=None)

@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Cove.Core.Entities;
+using Cove.Core.Enums;
 using Cove.Core.Auth;
 using Cove.Core.Interfaces;
 using Cove.Data;
@@ -30,7 +31,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.13";
+    public string Version => "0.1.14";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -182,11 +183,33 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 : await _local.RestartAsync(ctx.RequestAborted), Json);
         }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/defaults", async (HttpContext ctx) =>
-            Results.Json(new { defaults = (await SettingsAsync(ctx.RequestAborted)).Defaults }, Json))
+        {
+            var settings = await SettingsAsync(ctx.RequestAborted);
+            return Results.Json(new { settings.DefaultAudioKind, settings.DefaultFaceGender, settings.Defaults }, Json);
+        })
             .RequireCovePermission("videos.read");
+        MapGetResult(endpoints, "/api/ext/pmv/performers", async (HttpContext ctx) =>
+        {
+            var query = ctx.Request.Query["q"].ToString().Trim();
+            if (query.Length < 2) return Results.Json(Array.Empty<object>(), Json);
+            await using var scope = _scopes!.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var performers = await db.Performers.AsNoTracking().Where(p => p.Name.Contains(query))
+                .OrderBy(p => p.Name).Take(30).Select(p => new { p.Id, p.Name, p.Gender,
+                    HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && f.CoverBlobId != null && !f.Ignored) })
+                .ToArrayAsync(ctx.RequestAborted);
+            return Results.Json(performers, Json);
+        }).RequireCovePermission("performers.read");
         MapPutResult(endpoints, "/api/ext/pmv/settings", async (HttpContext ctx) =>
         {
             var settings = await ctx.Request.ReadFromJsonAsync<PmvSettings>(Json, ctx.RequestAborted) ?? new();
+            settings.Defaults ??= new PmvOptions();
+            if (settings.DefaultAudioKind is not ("cove" or "folder" or "upload" or "youtube" or "video"))
+                return Results.BadRequest(new { message = "Choose a supported default backing audio source." });
+            if (settings.DefaultFaceGender is not ("female" or "male" or "trans" or "all"))
+                return Results.BadRequest(new { message = "Choose a supported face performer gender preset." });
+            if (NewOptionError(settings.Defaults) is { } optionError)
+                return Results.BadRequest(new { message = optionError });
             if (settings.CompanionMode is not ("auto" or "external"))
                 return Results.BadRequest(new { message = "Choose automatic or external companion mode." });
             if (settings.CompanionMode == "auto" && !LocalCompanion.IsSupported)
@@ -324,6 +347,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         MapPostResult(endpoints, "/api/ext/pmv/preview", async (HttpContext ctx) =>
         {
             var request = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
+            if (request.Options is not null && NewOptionError(request.Options) is { } optionError)
+                return Results.BadRequest(new { message = optionError });
             await using var scope = _scopes!.CreateAsyncScope();
             var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;
             ScopeResult result;
@@ -332,13 +357,22 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             var settings = await SettingsAsync(ctx.RequestAborted);
             result = FilterSourcesForLayout(result, request.Options ?? settings.Defaults);
             var stem = result.Videos.Count == 0 ? "PMVMAKER_Multi" : PmvNaming.Stem(result, result.Videos, result.Videos.SelectMany(v => v.Segments).Select(s => s.Id).ToArray());
-            return Results.Json(new { eligibleCount = result.Videos.Count, exclusions = result.Exclusions,
+            var performerIds = result.Videos.SelectMany(v => v.PerformerIds).Distinct().ToArray();
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var performers = await db.Performers.AsNoTracking()
+                .Where(p => performerIds.Contains(p.Id)).OrderBy(p => p.Name)
+                .Select(p => new { p.Id, p.Name, p.Gender,
+                    HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && f.CoverBlobId != null && !f.Ignored) })
+                .ToArrayAsync(ctx.RequestAborted);
+            return Results.Json(new { eligibleCount = result.Videos.Count, exclusions = result.Exclusions, performers,
                 proposedFilename = PmvNaming.Proposed(settings.OutputFolder, stem, settings.ProjectFolder,
                     request.Options?.SaveProject ?? settings.Defaults.SaveProject) }, Json);
         }).RequireCovePermission("videos.read");
         MapPostResult(endpoints, "/api/ext/pmv/create", async (HttpContext ctx) =>
         {
             var request = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
+            if (NewOptionError(request.Options ?? (await SettingsAsync(ctx.RequestAborted)).Defaults) is { } optionError)
+                return Results.BadRequest(new { message = optionError });
             if (string.IsNullOrWhiteSpace((await SettingsAsync(ctx.RequestAborted)).OutputFolder))
                 return Results.BadRequest(new { message = "Set an output folder first." });
             if (!OutputInScanRoot((await SettingsAsync(ctx.RequestAborted)).OutputFolder, ctx.RequestServices))
@@ -353,6 +387,11 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             try { resolved = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted); }
             catch (UnauthorizedAccessException) { return Results.Forbid(); }
             resolved = FilterSourcesForLayout(resolved, request.Options ?? settings.Defaults);
+            var requestedOptions = request.Options ?? settings.Defaults;
+            if (requestedOptions.Layout == "three-pane" && requestedOptions.SelectionMode == "face"
+                && requestedOptions.MatchSelectedPerformers
+                && !scope.ServiceProvider.GetRequiredService<IAuthorizationService>().Has(principal, "performers.read"))
+                return Results.Forbid();
             if (resolved.Videos.Count == 0) return Results.BadRequest(new { message = "No eligible sources.", exclusions = resolved.Exclusions });
             var health = await CompanionGetAsync(settings, "health", ctx.RequestAborted);
             if (!health.GetProperty("ok").GetBoolean()) return Results.BadRequest(new { message = "Resolve Studio companion is unhealthy.", health });
@@ -402,6 +441,22 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private static RouteHandlerBuilder MapDeleteResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
         => endpoints.MapDelete(pattern, (Delegate)handler);
 
+    private static string? NewOptionError(PmvOptions options)
+    {
+        if (options.FaceSimilarityThreshold is < 0.3 or > 0.8 || !double.IsFinite(options.FaceSimilarityThreshold))
+            return "Face similarity threshold must be between 0.30 and 0.80.";
+        if (options.MinimumTimestampSeconds < 0 || options.EndBufferSeconds < 0
+            || !double.IsFinite(options.MinimumTimestampSeconds) || !double.IsFinite(options.EndBufferSeconds))
+            return "Clip timestamp and end buffer must be nonnegative seconds.";
+        if (options.RotatedClipLengthSeconds is < 1 or > 300 || !double.IsFinite(options.RotatedClipLengthSeconds))
+            return "Rotated scene length must be between 1 and 300 seconds.";
+        if (options.CycleLongerClipIntoSegments && options.RotatedClipLengthSeconds < options.MaxClipSeconds)
+            return "Rotated scene length must be at least the maximum clip length when cycling is enabled.";
+        if (options.BeatsPerBar is not ("auto" or "3" or "4" or "6"))
+            return "Beats per bar must be Auto, 3, 4, or 6.";
+        return null;
+    }
+
     private static HttpContent JsonBody<T>(T value)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(value, Json);
@@ -418,6 +473,17 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var options = request.Options ?? settings.Defaults;
         var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct), options);
         if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
+        var referenceIds = new List<string>();
+        try
+        {
+        var faceMode = options.Layout == "three-pane" && !options.UseVerticalVideosOnly
+            && options.SelectionMode == "face" && options.MatchSelectedPerformers;
+        var references = faceMode
+            ? await UploadFaceReferencesAsync(db, scope.ServiceProvider.GetRequiredService<IBlobService>(),
+                request.FacePerformerIds, resolved, settings, referenceIds, ct)
+            : new List<FaceReference>();
+        if (faceMode && references.Count == 0)
+            throw new InvalidOperationException("No reference face images were found for the selected performers. Choose performers with portraits or Cove face images, or disable performer matching.");
         var payload = new
         {
             sources = resolved.Videos.Select(v => new { v.Id, path = ToHost(v.Path, settings), v.Duration, v.Width, v.Height, v.Fps,
@@ -427,6 +493,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             launchKind = resolved.LaunchKind,
             audio = await AudioPayloadAsync(request.Audio, settings, db, scope.ServiceProvider.GetRequiredService<IAuthorizationService>(), principal, ct),
             options,
+            references,
             outputFolder = ToHost(settings.OutputFolder, settings),
             projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings),
             skipSetupChecks = settings.SkipSetupChecks
@@ -467,6 +534,57 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             try { await _http.SendAsync(cancel, CancellationToken.None); } catch { }
             throw;
         }
+        }
+        finally
+        {
+            foreach (var id in referenceIds)
+            {
+                using var delete = NewRequest(HttpMethod.Delete, settings, "references/" + id);
+                try { await _http.SendAsync(delete, CancellationToken.None); } catch { }
+            }
+        }
+    }
+
+    private async Task<List<FaceReference>> UploadFaceReferencesAsync(CoveContext db, IBlobService blobs,
+        List<int>? selectedIds, ScopeResult scope, PmvSettings settings, List<string> uploaded, CancellationToken ct)
+    {
+        var ids = selectedIds?.Distinct().ToArray() ?? scope.Videos.SelectMany(v => v.PerformerIds).Distinct().ToArray();
+        if (ids.Length == 0) return [];
+        var performers = await db.Performers.AsNoTracking().Where(p => ids.Contains(p.Id))
+            .Select(p => new { p.Id, p.Gender, p.ImageBlobId, p.ImageOverrideBlobId }).ToArrayAsync(ct);
+        if (selectedIds is null)
+            performers = performers.Where(p => settings.DefaultFaceGender switch
+            {
+                "female" => p.Gender == GenderEnum.Female,
+                "male" => p.Gender == GenderEnum.Male,
+                "trans" => p.Gender is GenderEnum.TransgenderFemale or GenderEnum.TransgenderMale,
+                _ => true
+            }).ToArray();
+        var result = new List<FaceReference>();
+        foreach (var performer in performers)
+        {
+            var faceBlob = await db.Faces.AsNoTracking().Where(f => f.PerformerId == performer.Id && !f.Ignored && f.CoverBlobId != null)
+                .OrderByDescending(f => f.DetectionCount).Select(f => f.CoverBlobId).FirstOrDefaultAsync(ct);
+            foreach (var blobId in new[] { faceBlob, performer.ImageOverrideBlobId, performer.ImageBlobId }.OfType<string>().Distinct().Take(2))
+            {
+                var blob = await blobs.GetBlobAsync(blobId, ct);
+                if (blob is null) continue;
+                await using var stream = blob.Value.Stream;
+                using var buffer = new MemoryStream();
+                await stream.CopyToAsync(buffer, ct);
+                if (buffer.Length == 0 || buffer.Length > 10_000_000) continue;
+                using var post = NewRequest(HttpMethod.Post, settings, "references");
+                post.Headers.Add("X-PMV-Performer-Id", performer.Id.ToString());
+                post.Content = new ByteArrayContent(buffer.ToArray());
+                using var response = await _http.SendAsync(post, ct);
+                response.EnsureSuccessStatusCode();
+                var reply = await response.Content.ReadFromJsonAsync<JsonElement>(Json, ct);
+                var id = reply.GetProperty("referenceId").GetString()!;
+                uploaded.Add(id);
+                result.Add(new FaceReference(performer.Id, id));
+            }
+        }
+        return result;
     }
 
     private async Task<object> AudioPayloadAsync(AudioSelection audio, PmvSettings settings, CoveContext db, IAuthorizationService authorization, CovePrincipal? principal, CancellationToken ct)
@@ -509,7 +627,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var used = scope.Videos.Where(v => job.UsedVideoIds?.Contains(v.Id) == true).ToList();
         var tagIds = new HashSet<int>();
         if (options.KeepPerformers)
-            foreach (var id in used.SelectMany(v => v.PerformerIds).Distinct())
+            foreach (var id in (options.Layout == "three-pane" && options.SelectionMode == "face" && options.MatchSelectedPerformers
+                ? job.MatchedPerformerIds ?? [] : used.SelectMany(v => v.PerformerIds).Distinct()))
                 db.Set<VideoPerformer>().Add(new VideoPerformer { VideoId = videoId, PerformerId = id });
         if (options.KeepTags)
             foreach (var id in used.SelectMany(v => v.Segments).Where(s => job.UsedSegmentIds?.Contains(s.Id) == true)
@@ -529,11 +648,31 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static ScopeResult FilterSourcesForLayout(ScopeResult source, PmvOptions options)
     {
-        if (options.Layout != "three-pane" || !options.UseVerticalVideosOnly) return source;
-        var vertical = source.Videos.Where(video => video.Height > video.Width).ToArray();
-        var excluded = source.Exclusions.Concat(source.Videos.Where(video => video.Height <= video.Width)
-            .Select(video => $"Video {video.Id}: not vertical")).ToArray();
-        return new ScopeResult(vertical, excluded, source.LaunchName, source.LaunchKind);
+        var excluded = new List<string>(source.Exclusions);
+        var eligible = new List<SourceVideo>();
+        foreach (var video in source.Videos)
+        {
+            var lower = Math.Max(0, options.MinimumTimestampSeconds);
+            var upper = video.Duration - Math.Max(0, options.EndBufferSeconds);
+            if (upper - lower < options.MinClipSeconds)
+            {
+                excluded.Add($"Video {video.Id}: timestamp limits leave less than the minimum clip length");
+                continue;
+            }
+            if (source.LaunchKind == "tag" && !video.Segments.Any(s =>
+                Math.Min(upper, s.End) - Math.Max(lower, s.Start) >= options.MinClipSeconds))
+            {
+                excluded.Add($"Video {video.Id}: no matching timed segment inside timestamp limits");
+                continue;
+            }
+            if (options.Layout == "three-pane" && options.UseVerticalVideosOnly && video.Height <= video.Width)
+            {
+                excluded.Add($"Video {video.Id}: not vertical");
+                continue;
+            }
+            eligible.Add(video);
+        }
+        return new ScopeResult(eligible, excluded, source.LaunchName, source.LaunchKind);
     }
 
     private static bool OutputInScanRoot(string path, IServiceProvider services)
@@ -556,10 +695,15 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         try
         {
             var settings = JsonSerializer.Deserialize<PmvSettings>(raw, Json) ?? new();
+            settings.Defaults ??= new PmvOptions();
             using var document = JsonDocument.Parse(raw);
             if (!document.RootElement.TryGetProperty("colorDefaultsVersion", out _) && settings.Defaults.ColorTreatment == "matched")
                 settings.Defaults.ColorTreatment = "natural";
             settings.ColorDefaultsVersion = 1;
+            if (!document.RootElement.TryGetProperty("faceDefaultsVersion", out _)
+                && settings.Defaults.SelectionMode == "center")
+                settings.Defaults.SelectionMode = "face";
+            settings.FaceDefaultsVersion = 1;
             if (!document.RootElement.TryGetProperty("companionMode", out _))
                 settings.CompanionMode = LocalCompanion.IsSupported
                     && settings.PathMappings.Count == 0

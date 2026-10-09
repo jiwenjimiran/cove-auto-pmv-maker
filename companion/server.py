@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
+import importlib
+import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -28,17 +32,67 @@ PICKER_LOCK = threading.Lock()
 TOKEN = ""
 VALIDATION_STATE = {"state": "idle", "progress": 0, "message": "Not run", "error": None}
 UPLOAD_ROOT = Path(gettempdir()) / "cove-pmv-song-uploads"
+REFERENCE_ROOT = Path(gettempdir()) / "cove-pmv-face-references"
 UPLOAD_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff"}
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+DEPENDENCIES = {"state": "checking", "message": "Checking Python components"}
+
+
+def prepare_dependencies():
+    missing = []
+    for module in ("cv2", "numpy", "scenedetect", "yt_dlp"):
+        try:
+            importlib.import_module(module)
+        except Exception:
+            missing.append(module)
+    if not missing:
+        DEPENDENCIES.update(state="ready", message="Python components ready")
+        return
+    DEPENDENCIES.update(state="installing", message="Installing Python components: " + ", ".join(missing))
+    try:
+        result = subprocess.run([sys.executable, "-m", "pip", "install",
+                                 *([] if sys.prefix != sys.base_prefix else ["--user"]), "-r",
+                                 str(Path(__file__).with_name("requirements.txt"))],
+                                capture_output=True, text=True, timeout=600)
+        if result.returncode:
+            raise RuntimeError((result.stderr or result.stdout)[-1200:])
+        importlib.invalidate_caches()
+        remaining = []
+        for module in missing:
+            try:
+                importlib.import_module(module)
+            except Exception:
+                remaining.append(module)
+        if remaining:
+            raise RuntimeError("Still missing after installation: " + ", ".join(remaining))
+        DEPENDENCIES.update(state="ready", message="Python components ready")
+    except Exception as exc:
+        DEPENDENCIES.update(state="failed", message="Python components could not be installed: " + str(exc))
 
 
 def cleanup_uploads():
-    if not UPLOAD_ROOT.exists():
-        return
     cutoff = time.time() - 7 * 24 * 60 * 60
-    for path in UPLOAD_ROOT.iterdir():
-        if path.is_file() and path.stat().st_mtime < cutoff:
-            path.unlink(missing_ok=True)
+    if UPLOAD_ROOT.exists():
+        for path in UPLOAD_ROOT.iterdir():
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+    if REFERENCE_ROOT.exists():
+        for path in REFERENCE_ROOT.iterdir():
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+
+
+def face_references(rows):
+    result = []
+    for row in rows:
+        reference_id = row.get("referenceId", "")
+        if not re.fullmatch(r"[0-9a-f]{32}", reference_id):
+            raise ValueError("Invalid face reference ID")
+        path = REFERENCE_ROOT / reference_id
+        if not path.is_file():
+            raise ValueError("Performer face reference expired; create the job again")
+        result.append({"performerId": int(row["performerId"]), "dataBase64": base64.b64encode(path.read_bytes()).decode("ascii")})
+    return result
 
 
 def uploaded_song(upload_id):
@@ -98,6 +152,8 @@ def validate_resolve():
 
 
 def health():
+    if DEPENDENCIES["state"] != "ready":
+        return {"ok": False, "error": DEPENDENCIES["message"]}
     missing = [tool for tool in ("ffmpeg", "ffprobe") if shutil.which(tool) is None]
     if missing:
         return {"ok": False, "error": "Missing tools: " + ", ".join(missing)}
@@ -113,7 +169,7 @@ def health():
             marker = {}
         validated = marker.get("product") == product and marker.get("version") == version and marker.get("schema") == VALIDATION_SCHEMA
         return {"ok": True, "validated": validated, "product": product, "version": version,
-                "ytDlp": shutil.which("yt-dlp") is not None}
+                "ytDlp": importlib.util.find_spec("yt_dlp") is not None}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -197,13 +253,20 @@ def do_job(job_id, payload):
                 if trim_start < 0 or trim_end > full or trim_end - trim_start < 2:
                     raise ValueError("Song trim must leave at least two seconds")
                 update(12, "Analyzing beats and phrases")
-                beats = beat_grid(song, trim_start, trim_end, cancelled)
+                beats = beat_grid(song, trim_start, trim_end, cancelled, options.get("beatsPerBar", "auto"))
                 update(25, f"Finding usable footage in {len(sources)} eligible videos")
-                clips = edit_plan(sources, beats, options, options["layout"], cancelled, update)
+                from advanced_edit import edit_plan as advanced_plan
+                clips = advanced_plan(sources, beats, options, options["layout"], cancelled, update,
+                                      face_references(payload.get("references") or []))
                 if cancelled.is_set():
                     raise InterruptedError("Cancelled")
                 used_video_ids = sorted({c.video_id for c in clips})
-                used_segment_ids = sorted({c.segment_id for c in clips if c.segment_id is not None})
+                used_segment_ids = sorted({int(segment["id"]) for clip in clips for source in sources
+                                           if int(source["id"]) == clip.video_id
+                                           for segment in source.get("segments") or []
+                                           if clip.source_start < float(segment["end"])
+                                           and clip.source_start + clip.duration > float(segment["start"])})
+                matched_performer_ids = sorted({c.matched_performer_id for c in clips if c.matched_performer_id is not None})
                 stem = output_stem(sources, clips, payload.get("launchName"))
                 output_path, marker = reserve_output(payload["outputFolder"], stem, payload.get("projectFolder", ""),
                                                      bool(options.get("saveProject")))
@@ -213,7 +276,8 @@ def do_job(job_id, payload):
                 render(clips, mix, output_path, width, height, fps, options, payload.get("projectFolder", ""), cancelled, update,
                        require_validation=not skip_checks)
                 state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,
-                             usedVideoIds=used_video_ids, usedSegmentIds=used_segment_ids)
+                             usedVideoIds=used_video_ids, usedSegmentIds=used_segment_ids,
+                             matchedPerformerIds=matched_performer_ids)
         except InterruptedError:
             state.update(state="cancelled", message="Render cancelled")
         except Exception as exc:
@@ -271,6 +335,21 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        if path == "/references":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                performer_id = int(self.headers.get("X-PMV-Performer-Id", "0"))
+                if length <= 0 or length > 10_000_000 or performer_id <= 0:
+                    raise ValueError("Invalid performer reference image")
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("Performer reference upload ended early")
+                REFERENCE_ROOT.mkdir(parents=True, exist_ok=True)
+                reference_id = uuid.uuid4().hex
+                (REFERENCE_ROOT / reference_id).write_bytes(raw)
+                return self.reply(201, {"referenceId": reference_id})
+            except Exception as exc:
+                return self.reply(400, {"message": str(exc)})
         if path == "/uploads":
             target = None
             try:
@@ -341,6 +420,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return
         path = urlparse(self.path).path
+        if path.startswith("/references/"):
+            reference_id = path.split("/")[-1]
+            if not re.fullmatch(r"[0-9a-f]{32}", reference_id):
+                return self.reply(400, {"message": "Invalid face reference ID"})
+            (REFERENCE_ROOT / reference_id).unlink(missing_ok=True)
+            return self.reply(200, {"deleted": True})
         if path.startswith("/uploads/"):
             delete_uploaded_song(path.split("/")[-1])
             return self.reply(200, {"deleted": True})
@@ -364,6 +449,7 @@ if __name__ == "__main__":
         parser.error("Provide a random token of at least 24 characters via --token or COVE_PMV_TOKEN")
     TOKEN = args.token
     cleanup_uploads()
+    threading.Thread(target=prepare_dependencies, daemon=True).start()
     if args.parent_pid:
         threading.Thread(target=watch_parent, args=(args.parent_pid,), daemon=True).start()
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()

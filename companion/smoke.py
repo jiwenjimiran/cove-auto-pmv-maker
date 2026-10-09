@@ -6,7 +6,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from engine import audio_duration, beat_grid, choose_format, edit_plan, mix_audio, probe, run
+from engine import Clip, audio_duration, beat_grid, choose_format, edit_plan, mix_audio, probe, run
 from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render
 
 
@@ -84,9 +84,34 @@ def main(automated=False, progress=None, limit=None):
                         raise RuntimeError(f"Audio peak measurement failed for {name}")
                     checks.append({"name": name, "output": str(output), "duration": media["format"]["duration"]})
                     if progress:
-                        progress(len(checks), 18, name)
+                        progress(len(checks), 19, name)
                     if limit is not None and len(checks) >= limit:
                         return checks
+        # Verify the new full-height crop and FlipX technique against an
+        # asymmetric repeated source, so a property accepted but ignored by
+        # Resolve cannot silently pass compatibility.
+        pair = root / "mirror-source.mp4"
+        run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=red:size=640x720:rate=30:duration=7",
+             "-f", "lavfi", "-i", "color=blue:size=640x720:rate=30:duration=7",
+             "-filter_complex", "[0:v][1:v]hstack=inputs=2[v]", "-map", "[v]", "-c:v", "libx264",
+             "-preset", "ultrafast", str(pair)])
+        mirror_output = root / "mirror-fixture.mp4"
+        mirror_clips = [Clip(90, str(pair), 0, 7, 0, 0, None, False),
+                        Clip(5, sources[4]["path"], 0, 7, 0, 1, None, False),
+                        Clip(90, str(pair), 0, 7, 0, 2, None, False, .5, (), None, True)]
+        render(mirror_clips, str(song), str(mirror_output), 1920, 1080, 30,
+               {"layout": "three-pane", "selectionMode": "face", "style": "rhythmic-polish",
+                "colorTreatment": "natural", "transitionFamilies": ["cut"]}, "", threading.Event(),
+               lambda percent, message: None, require_validation=False)
+        frame, _ = run(["ffmpeg", "-v", "error", "-ss", "1", "-i", str(mirror_output),
+                        "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        left = frame[(540 * 1920 + 480) * 3:(540 * 1920 + 480) * 3 + 3]
+        right = frame[(540 * 1920 + 1760) * 3:(540 * 1920 + 1760) * 3 + 3]
+        if left == right:
+            raise RuntimeError("Resolve did not visually mirror the repeated outside pane")
+        checks.append({"name": "full-height-mirror", "output": str(mirror_output), "duration": probe(mirror_output)["format"]["duration"]})
+        if progress:
+            progress(len(checks), 19, "full-height-mirror")
         print(json.dumps({"studio": resolve.GetProductName(), "version": resolve.GetVersionString(), "renders": checks}, indent=2))
         print("Inspect beat cuts, transition smoothness, flash/glitch accents, crop edges, and audio peaks before cleanup.")
         if automated or input("Type VALIDATED to enable this Resolve version: ").strip() == "VALIDATED":
