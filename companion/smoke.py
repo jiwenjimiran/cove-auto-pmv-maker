@@ -119,18 +119,19 @@ def main(automated=False, progress=None, limit=None):
         for role, expansion in (("grid", False), ("grid", True), ("three-pane", True)):
             name = role + ("-expansion" if expansion else "-tiles")
             members = landscape if role == "grid" else sources[:3]
+            expansion_pane = len(members) - 1
             fixtures = [Clip(int(source["id"]), source["path"], 0, 2, 0, index, None, False, .5,
                              layout_role=role) for index, source in enumerate(members)]
             if expansion:
                 fixtures.extend(Clip(int(source["id"]), source["path"], 2, .5, 2, index, None, False, .5,
                                      layout_role=role, underlay=True)
                                 for index, source in enumerate(members))
-                fixtures.append(Clip(int(members[0]["id"]), members[0]["path"], 2, 2, 2, 0, None, False, .5,
-                                     layout_role="full-screen", expansion_from=0,
+                fixtures.append(Clip(int(members[expansion_pane]["id"]), members[expansion_pane]["path"], 2, 2, 2, 0, None, False, .5,
+                                     layout_role="full-screen", expansion_from=expansion_pane,
                                      expansion_duration=.5, expansion_layout=role))
             output = root / (name + ".mp4")
             render(fixtures, str(song), str(output), 640, 360, 30,
-                   {"layout": role + "-full" if expansion else role, "selectionMode": "center",
+                   {"layoutModes": [role, "full-screen"] if expansion else [role], "selectionMode": "center",
                     "style": "rhythmic-polish", "colorTreatment": "natural", "transitionFamilies": ["cut"]},
                    "", threading.Event(), lambda percent, message: None, require_validation=False)
             def sample(seconds, x, y):
@@ -145,7 +146,8 @@ def main(automated=False, progress=None, limit=None):
                 raise RuntimeError(f"{name} did not render distinct visible cells: {first}")
             if expansion:
                 last = [sample(3, x, y) for x, y in centers]
-                if any(max(abs(a - b) for a, b in zip(pixel, last[0])) > 8 for pixel in last[1:]):
+                if any(max(abs(a - b) for a, b in zip(pixel, last[0])) > 8 for pixel in last[1:]) or (
+                        role == "three-pane" and last[0][2] < 80):
                     raise RuntimeError(f"{name} did not expand its cell to the full frame: {last}")
             checks.append({"name": name, "output": str(output),
                            "duration": probe(output)["format"]["duration"]})

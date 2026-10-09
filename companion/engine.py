@@ -46,6 +46,19 @@ def audio_duration(path):
     return float(probe(path)["format"]["duration"])
 
 
+def layout_modes(options, legacy_layout=None):
+    """Resolve current checkbox modes, with old job payloads still readable."""
+    if "layoutModes" in options:
+        selected = options.get("layoutModes") or []
+        modes = [mode for mode in ("grid", "three-pane", "full-screen") if mode in selected]
+        return modes or ["full-screen"]
+    layout = legacy_layout or options.get("layout", "full-screen")
+    return {
+        "grid-full": ["grid", "full-screen"],
+        "three-pane-full": ["three-pane", "full-screen"],
+    }.get(layout, [layout] if layout in ("grid", "three-pane", "full-screen") else ["full-screen"])
+
+
 def choose_format(sources, layout, options):
     if not sources:
         raise ValueError("No eligible video sources")
@@ -54,7 +67,7 @@ def choose_format(sources, layout, options):
     ratios = [int(s["width"]) / int(s["height"]) for s in sources]
     common = max(ratios) - min(ratios) <= sum(ratios) / len(ratios) * 0.02
     ratio = sum(ratios) / len(ratios) if common else 16 / 9
-    if layout in ("three-pane", "three-pane-full") and ratio < 1:
+    if any(mode in ("three-pane", "grid") for mode in layout_modes(options, layout)) and ratio < 1:
         ratio = 16 / 9
     if ratio >= 1:
         width, height = 2 * round(base * ratio / 2), base

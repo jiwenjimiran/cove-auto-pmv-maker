@@ -103,7 +103,7 @@ class AdvancedEditTests(unittest.TestCase):
 
     def test_large_library_only_decodes_selected_source_windows(self):
         beats = BeatGrid([float(i) for i in range(13)], bars=(0, 3, 6, 9), phrases=(9,), meter=4)
-        options = {"layout": "full-screen", "sampledClipsProgress": True,
+        options = {"layout": "full-screen", "fullSelectionMode": "scene", "sampledClipsProgress": True,
                    "maxClipSeconds": 4, "minClipSeconds": 1, "rotatedClipLengthSeconds": 10}
         with patch("source_picker.scene_ranges", side_effect=lambda path, start, duration, cancel: [(start, start + duration)]) as scenes:
             clips = edit_plan([source(i) for i in range(1, 101)], beats, options, "full-screen")

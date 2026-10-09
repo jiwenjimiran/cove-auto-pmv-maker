@@ -67,13 +67,13 @@ const stylePresets = {
   cinematic: { motionIntensityMin: 0.1, motionIntensityMax: 0.3, transitionIntensityMin: 0.35, transitionIntensityMax: 0.65, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0 }
 };
 const optionHelp = {
-  layout: "Choose three portrait panes, a four-video grid, full screen, or a layout that alternates with full screen at phrase boundaries.",
+  layoutModes: "Select any combination. Each selected mode appears in the song, changing at phrase boundaries. With none selected, the edit uses Full screen.",
   useVerticalVideosOnly: "Only portrait source videos may appear in the three-pane edit. Landscape videos are excluded before planning.",
   selectionMode: "For landscape footage, choose a random vertical crop, the center crop, or a crop around a detected face.",
   fullSelectionMode: "Scene uses a usable shot. Face match also requires a selected performer's face throughout the full-screen shot.",
   keepFaceCentered: "Moves a full-height portrait crop horizontally with the chosen face. It never zooms in on the face.",
   matchSelectedPerformers: "Matches detected faces against the selected performers' Cove images. A range without a confident match is skipped.",
-  faceSimilarityThreshold: "Minimum SFace cosine similarity for a chosen performer's face. Higher is stricter; 0.45 is the default.",
+  faceSimilarityThreshold: "Every accepted sampled face must reach this SFace cosine similarity to a selected performer image. 55% is the minimum allowed. This is a model similarity score, not a probability of identity. Full-screen Scene mode does not perform face matching.",
   mirrorRepeatedSource: "When the same video occupies both outside panes, use the same moment and mirror the right pane.",
   sampledClipsProgress: "Move sampling through successive 5% sections of each video.",
   minimumTimestampSeconds: "Never sample source footage before this timestamp.",
@@ -96,6 +96,7 @@ const optionHelp = {
   songTrimStart: "Optional starting point in the backing song, in seconds. Leave blank to start at the beginning.",
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
   outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
+  outputCodec: "Render an MP4 with H.264, H.265, or AV1. Available encoders depend on this PC's Resolve Studio and graphics hardware; Create checks the choice before queueing.",
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
   colorTreatment: "None leaves source colors alone. Match brightness samples the first two seconds of each used video. Warm and Cool apply subtle color shifts.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
@@ -204,8 +205,8 @@ function FolderPicker({ kind, current, onChoose, onClose }) {
 }
 
 const defaultOptions = {
-  layout: "three-pane", useVerticalVideosOnly: false, selectionMode: "face", fullSelectionMode: "scene", segmentTagIds: [], keepFaceCentered: true,
-  matchSelectedPerformers: true, faceSimilarityThreshold: 0.45, mirrorRepeatedSource: true,
+  layout: "full-screen", layoutModes: [], useVerticalVideosOnly: false, selectionMode: "face", fullSelectionMode: "face", segmentTagIds: [], keepFaceCentered: true,
+  matchSelectedPerformers: true, faceSimilarityThreshold: 0.55, mirrorRepeatedSource: true,
   sampledClipsProgress: true, minimumTimestampSeconds: 0, endBufferSeconds: 0,
   cycleLongerClipIntoSegments: true, rotatedClipLengthSeconds: 30, beatsPerBar: "auto",
   style: "rhythmic-polish", sourceAudio: "mixed", pacingMin: 0.4, pacingMax: 0.7,
@@ -213,16 +214,19 @@ const defaultOptions = {
   transitionFamilies: ["cut", "dissolve"], transitionIntensityMin: 0.15, transitionIntensityMax: 0.35,
   motionIntensityMin: 0.15, motionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0,
   glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "natural", songTrimStart: null,
-  songTrimEnd: null, outputFps: null, saveProject: false, scanToCove: true,
+  songTrimEnd: null, outputFps: null, outputCodec: "h264", saveProject: false, scanToCove: true,
   keepPerformers: true, keepTags: true, addPmvTag: true, addAutoPmvTag: true
 };
 
+function selectedModes(options) {
+  return options.layoutModes?.length ? options.layoutModes : ["full-screen"];
+}
+
 function needsFaceReferences(options) {
-  const sliceMode = ["three-pane", "three-pane-full", "grid", "grid-full"].includes(options.layout)
-    && (!options.useVerticalVideosOnly || ["grid", "grid-full"].includes(options.layout))
-    && options.selectionMode === "face";
-  const fullMode = ["full-screen", "three-pane-full", "grid-full"].includes(options.layout)
-    && options.fullSelectionMode === "face";
+  const modes = selectedModes(options);
+  const sliceMode = options.selectionMode === "face" && (modes.includes("grid")
+    || (modes.includes("three-pane") && !options.useVerticalVideosOnly));
+  const fullMode = modes.includes("full-screen") && options.fullSelectionMode === "face";
   return options.matchSelectedPerformers !== false && (sliceMode || fullMode);
 }
 
@@ -255,24 +259,36 @@ function SegmentTagPicker({ ids, onChange }) {
 
 function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions(current => ({ ...current, [key]: value }));
-  const slices = ["three-pane", "three-pane-full", "grid", "grid-full"].includes(options.layout);
-  const portrait = ["three-pane", "three-pane-full"].includes(options.layout);
-  const full = ["full-screen", "three-pane-full", "grid-full"].includes(options.layout);
+  const modes = selectedModes(options);
+  const slices = modes.includes("grid") || modes.includes("three-pane");
+  const portrait = modes.includes("three-pane");
+  const full = modes.includes("full-screen");
+  const faceSlices = modes.includes("grid") || (portrait && !options.useVerticalVideosOnly);
+  const toggleMode = (mode, enabled) => setOptions(current => ({ ...current,
+    layoutModes: enabled ? [...new Set([...(current.layoutModes || []), mode])] : (current.layoutModes || []).filter(item => item !== mode) }));
   return <>
     <div className="pmv-form-heading"><h5>Layout settings</h5><span>01</span></div>
+    <fieldset className="pmv-layout-choices"><legend>Modes <InfoButton label="Modes" help={optionHelp.layoutModes} /></legend>
+      <div className="pmv-checkbox-grid">
+        {[["grid", "Grid (four videos)"], ["three-pane", "Triple portrait"], ["full-screen", "Full screen"]].map(([mode, label]) =>
+          <Control key={mode} label={label} help={optionHelp.layoutModes} className="pmv-toggle">{id =>
+            <input id={id} type="checkbox" checked={(options.layoutModes || []).includes(mode)} onChange={e => toggleMode(mode, e.target.checked)} />}</Control>)}
+      </div>
+      {!(options.layoutModes || []).length && <small>No modes checked: Full screen will be used.</small>}
+    </fieldset>
     <div className="pmv-grid">
-      <Control label="Layout" help={optionHelp.layout}>{id => <select id={id} value={options.layout} onChange={e => set("layout", e.target.value)}><option value="three-pane">Three portrait panes</option><option value="full-screen">Full screen</option><option value="grid">Four-video grid</option><option value="three-pane-full">Three portrait panes + full</option><option value="grid-full">Grid + full</option></select>}</Control>
       {portrait && <Control label="Use vertical videos only" help={optionHelp.useVerticalVideosOnly} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options.useVerticalVideosOnly} onChange={e => set("useVerticalVideosOnly", e.target.checked)} />}</Control>}
-      {slices && (!portrait || !options.useVerticalVideosOnly) && <Control label="Slice selection mode" help={optionHelp.selectionMode}>{id => <select id={id} value={options.selectionMode || "center"} onChange={e => set("selectionMode", e.target.value)}><option value="random">Random slice</option><option value="center">Center slice</option><option value="face">Face slice</option></select>}</Control>}
-      {slices && options.selectionMode === "face" && (!portrait || !options.useVerticalVideosOnly) && <Control label="Keep face centered" help={optionHelp.keepFaceCentered} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.keepFaceCentered !== false} onChange={e => set("keepFaceCentered", e.target.checked)} />}</Control>}
-      {full && <Control label="Full-screen selection mode" help={optionHelp.fullSelectionMode}>{id => <select id={id} value={options.fullSelectionMode || "scene"} onChange={e => set("fullSelectionMode", e.target.value)}><option value="scene">Scene</option><option value="face">Face match</option></select>}</Control>}
-      {((slices && options.selectionMode === "face" && (!portrait || !options.useVerticalVideosOnly)) || (full && options.fullSelectionMode === "face")) && <Control label="Match selected performers" help={optionHelp.matchSelectedPerformers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.matchSelectedPerformers !== false} onChange={e => set("matchSelectedPerformers", e.target.checked)} />}</Control>}
+      {slices && faceSlices && <Control label="Slice selection mode" help={optionHelp.selectionMode}>{id => <select id={id} value={options.selectionMode || "center"} onChange={e => set("selectionMode", e.target.value)}><option value="random">Random slice</option><option value="center">Center slice</option><option value="face">Face slice</option></select>}</Control>}
+      {slices && faceSlices && options.selectionMode === "face" && <Control label="Keep face centered" help={optionHelp.keepFaceCentered} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.keepFaceCentered !== false} onChange={e => set("keepFaceCentered", e.target.checked)} />}</Control>}
+      {full && <Control label="Full-screen selection mode" help={optionHelp.fullSelectionMode}>{id => <><select id={id} value={options.fullSelectionMode || "face"} onChange={e => set("fullSelectionMode", e.target.value)}><option value="face">Face match</option><option value="scene">Scene (no performer check)</option></select>{options.fullSelectionMode === "scene" && <small>Scene shots are not matched to a performer.</small>}</>}</Control>}
+      {((slices && faceSlices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && <Control label="Match selected performers" help={optionHelp.matchSelectedPerformers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.matchSelectedPerformers !== false} onChange={e => set("matchSelectedPerformers", e.target.checked)} />}</Control>}
       {portrait && <Control label="Mirror repeated source" help={optionHelp.mirrorRepeatedSource} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.mirrorRepeatedSource !== false} onChange={e => set("mirrorRepeatedSource", e.target.checked)} />}</Control>}
     </div>
     <div className="pmv-form-heading"><h5>Creative direction</h5><span>02</span></div>
     <div className="pmv-grid">
       <Control label="Style" help={optionHelp.style}>{id => <><select id={id} value={options.style} onChange={e => setOptions(current => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] }))}>{Object.keys(styleHelp).map(x => <option key={x} value={x}>{x.replaceAll("-", " ")}</option>)}</select><small>{styleHelp[options.style]}</small></>}</Control>
       <Control label="Source audio" help={optionHelp.sourceAudio}>{id => <select id={id} value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">Muted</option><option value="mixed">Mixed · brief accents</option><option value="all">All source audio</option></select>}</Control>
+      <Control label="Render codec" help={optionHelp.outputCodec}>{id => <select id={id} value={options.outputCodec || "h264"} onChange={e => set("outputCodec", e.target.value)}><option value="h264">H.264 MP4</option><option value="h265">H.265 MP4</option><option value="av1">AV1 MP4</option></select>}</Control>
     </div>
     <details className="pmv-advanced"><summary>Advanced edit controls</summary><div className="pmv-grid">
       {[["pacing", "Pacing"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => <RangeControl key={key} label={label} help={optionHelp[key]} lower={options[`${key}Min`] ?? 0} upper={options[`${key}Max`] ?? 0} onChange={(lower, upper) => setOptions(current => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper }))} />)}
@@ -281,7 +297,7 @@ function OptionForm({ options, setOptions }) {
       <Control label="Cycle longer clip into segments" help={optionHelp.cycleLongerClipIntoSegments} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.cycleLongerClipIntoSegments !== false} onChange={e => set("cycleLongerClipIntoSegments", e.target.checked)} />}</Control>
       {[["minimumTimestampSeconds", "Clip minimum timestamp"], ["endBufferSeconds", "Keep clear before source end"], ["rotatedClipLengthSeconds", "Rotated scene length"]].map(([key, label]) => <Control key={key} label={`${label} (sec)`} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" max={key === "rotatedClipLengthSeconds" ? 300 : undefined} step="0.5" value={options[key] ?? 0} onChange={e => set(key, Number(e.target.value))} />}</Control>)}
       <Control label="Beats per bar" help={optionHelp.beatsPerBar}>{id => <select id={id} value={options.beatsPerBar || "auto"} onChange={e => set("beatsPerBar", e.target.value)}><option value="auto">Auto</option><option value="3">3</option><option value="4">4</option><option value="6">6</option></select>}</Control>
-      {((slices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && options.matchSelectedPerformers !== false && <Control label="Face similarity threshold" help={optionHelp.faceSimilarityThreshold}>{id => <div className="pmv-range"><input id={id} type="range" min="0.3" max="0.8" step="0.01" value={options.faceSimilarityThreshold ?? 0.45} onChange={e => set("faceSimilarityThreshold", Number(e.target.value))} /><output>{Number(options.faceSimilarityThreshold ?? 0.45).toFixed(2)}</output></div>}</Control>}
+      {((slices && faceSlices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && options.matchSelectedPerformers !== false && <Control label="Face slice performer matching minimum confidence required" help={optionHelp.faceSimilarityThreshold}>{id => <div className="pmv-range"><input id={id} type="range" min="0.55" max="0.8" step="0.01" value={Math.max(0.55, options.faceSimilarityThreshold ?? 0.55)} onChange={e => set("faceSimilarityThreshold", Number(e.target.value))} /><output>{Math.round(100 * Math.max(0.55, options.faceSimilarityThreshold ?? 0.55))}%</output></div>}</Control>}
       {["beatAdherence", "sourceDiversity"].map(key => <Control key={key} label={key === "beatAdherence" ? "Beat adherence" : "Source diversity"} help={optionHelp[key]}>{id => <div className="pmv-range"><input id={id} type="range" min="0" max="1" step="0.05" value={options[key]} onChange={e => set(key, Number(e.target.value))} /><output>{Number(options[key]).toFixed(2)}</output></div>}</Control>)}
       {["songTrimStart", "songTrimEnd"].map((key, i) => <Control key={key} label={["Song start (sec)", "Song end (sec)"][i]} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
       <Control label="FPS override" help={optionHelp.outputFps}>{id => <select id={id} value={options.outputFps ?? ""} onChange={e => set("outputFps", e.target.value ? Number(e.target.value) : null)}><option value="">Auto</option><option value="24">24 fps</option><option value="25">25 fps</option><option value="30">30 fps</option><option value="50">50 fps</option><option value="60">60 fps</option></select>}</Control>

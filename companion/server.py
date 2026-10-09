@@ -22,8 +22,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
 from urllib.parse import parse_qs, urlparse
 
-from engine import audio_duration, beat_grid, choose_format, edit_plan, mix_audio, output_stem, prepare_audio, reserve_output
-from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render
+from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_modes, mix_audio, output_stem, prepare_audio, reserve_output
+from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render, select_mp4_codec
 
 JOBS = {}
 LOCK = threading.Lock()
@@ -217,6 +217,26 @@ def preflight(payload):
         if not project_folder.is_absolute():
             raise ValueError("Project folder must be absolute")
         project_folder.mkdir(parents=True, exist_ok=True)
+    requested_codec = payload.get("outputCodec") or (payload.get("options") or {}).get("outputCodec")
+    if requested_codec:
+        resolve = connect(require_validation=False)
+        manager = resolve.GetProjectManager()
+        current = manager.GetCurrentProject()
+        temporary_name = None
+        if current is None:
+            temporary_name = f"PMV_Codec_Check_{uuid.uuid4().hex[:10]}"
+            current = manager.CreateProject(temporary_name)
+            if current is None:
+                raise RuntimeError("Resolve could not create a temporary project to check the selected MP4 codec")
+        previous = current.GetCurrentRenderFormatAndCodec() or {}
+        try:
+            select_mp4_codec(current, requested_codec, apply=True)
+        finally:
+            if temporary_name:
+                manager.CloseProject(current)
+                manager.DeleteProject(temporary_name)
+            elif previous.get("format") and previous.get("codec"):
+                current.SetCurrentRenderFormatAndCodec(previous["format"], previous["codec"])
     return sources
 
 
@@ -268,7 +288,8 @@ def do_job(job_id, payload):
                 raise RuntimeError("Run the Resolve compatibility check for this companion and Resolve version first")
             sources = preflight(payload)
             options = payload.get("options") or {}
-            options["layout"] = options.get("layout", "three-pane")
+            options["layout"] = options.get("layout", "full-screen")
+            modes = layout_modes(options)
             width, height, fps = choose_format(sources, options["layout"], options)
             with TemporaryDirectory(prefix="pmvmaker-") as temp:
                 update(5, "Preparing backing song")
@@ -283,7 +304,7 @@ def do_job(job_id, payload):
                 update(25, f"Finding usable footage in {len(sources)} eligible videos")
                 from advanced_edit import edit_plan as advanced_plan
                 from layout_edit import edit_plan as layout_plan
-                planner = advanced_plan if options["layout"] == "full-screen" else layout_plan
+                planner = advanced_plan if modes == ["full-screen"] else layout_plan
                 clips = planner(sources, beats, options, options["layout"], cancelled, update,
                                 face_references(payload.get("references") or []),
                                 lambda message: log_job_event(state, message))

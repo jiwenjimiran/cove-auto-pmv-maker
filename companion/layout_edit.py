@@ -6,7 +6,7 @@ import time
 from dataclasses import replace
 
 from advanced_edit import clock_time
-from engine import Clip, choose_format
+from engine import Clip, choose_format, layout_modes
 from source_picker import SourceCursor, permitted_ranges
 
 
@@ -74,10 +74,9 @@ def _phase_events(start, end, role, beats, bars, phrases, options, opening):
 
 
 def edit_plan(sources, beats, options, layout, cancel=None, progress=None, references=None, log=None):
-    hybrid = layout in ("three-pane-full", "grid-full")
-    multi_role = "grid" if layout in ("grid", "grid-full") else "three-pane"
-    if multi_role == "grid":
-        sources = [source for source in sources if int(source["height"]) <= int(source["width"])]
+    modes = layout_modes(options, layout)
+    if modes == ["full-screen"]:
+        raise ValueError("The full-screen-only edit uses the single-screen planner")
     if not sources:
         raise ValueError("No eligible video sources for this layout")
     duration, bars, phrases = _musical_times(beats, options)
@@ -86,36 +85,47 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     rng = random.Random(options.get("randomSeed"))
     cursors = {int(source["id"]): SourceCursor(source, options, rng, cancel) for source in sources}
     eligible = [source for source in sources if cursors[int(source["id"])].ranges]
-    if multi_role == "grid" and len(eligible) < 4:
+    grid_pool = [source for source in eligible if int(source["height"]) <= int(source["width"])]
+    if "grid" in modes and len(grid_pool) < 4:
         raise ValueError("Grid needs four eligible landscape source videos")
     if not eligible:
         raise ValueError("Timestamp or segment restrictions leave no usable sources")
-    multi_pool = ([source for source in eligible if int(source["height"]) > int(source["width"])]
-                  if multi_role == "three-pane" and options.get("useVerticalVideosOnly") else eligible)
-    if not multi_pool:
+    portrait_pool = ([source for source in eligible if int(source["height"]) > int(source["width"])]
+                     if options.get("useVerticalVideosOnly") else eligible)
+    if "three-pane" in modes and not portrait_pool:
         raise ValueError("No portrait sources are eligible for the three-pane phase")
     output_width, output_height, _ = choose_format(eligible, layout, options)
-    slice_face = options.get("selectionMode", "face") == "face" and not (
-        multi_role == "three-pane" and options.get("useVerticalVideosOnly"))
-    full_face = hybrid and options.get("fullSelectionMode", "scene") == "face"
+    slice_face = options.get("selectionMode", "face") == "face" and (
+        "grid" in modes or "three-pane" in modes and not options.get("useVerticalVideosOnly"))
+    full_face = "full-screen" in modes and options.get("fullSelectionMode", "face") == "face"
     matcher = None
     if slice_face or full_face:
         from face_analysis import FaceAnalyzer
         matcher = FaceAnalyzer(references=references if options.get("matchSelectedPerformers", True) else None,
-                               threshold=float(options.get("faceSimilarityThreshold", 0.45)))
+                               threshold=float(options.get("faceSimilarityThreshold", 0.55)))
         if options.get("matchSelectedPerformers", True) and not matcher.references:
             raise ValueError("No usable reference face for selected performers")
     reference_names = {int(row["performerId"]): row.get("performerName") or f"performer #{row['performerId']}"
                        for row in references or []}
+    # Interleave full-screen between multi-cell layouts so both multi layouts
+    # get a chance to expand a visible cell into the next full-screen phrase.
+    multi_modes = [mode for mode in modes if mode != "full-screen"]
+    sequence = ([role for mode in multi_modes for role in (mode, "full-screen")]
+                if "full-screen" in modes and multi_modes else modes)
     opening_cadence = beats[1:-1] if options.get("style") == "high-energy" else bars
-    needed = 3 if multi_role == "grid" else 2
+    needed = {"grid": 3, "three-pane": 2, "full-screen": 0}[sequence[0]]
     opening_times = [float(t) for t in opening_cadence if 0 < t < duration][:needed]
     if len(opening_times) < needed:
         raise ValueError("Song is too short to complete the opening cell sequence")
-    boundaries = ([t for t in phrases if t > opening_times[-1] + 0.01 and t < duration - 0.25]
-                  if hybrid else [])
-    if hybrid and not boundaries:
-        raise ValueError("Song needs a phrase boundary after the opening to alternate layouts")
+    after_opening = opening_times[-1] if opening_times else 0.0
+    boundaries = ([t for t in phrases if t > after_opening + 0.01 and t < duration - 0.25]
+                  if len(sequence) > 1 else [])
+    if len(boundaries) < len(modes) - 1:
+        raise ValueError("Song needs more phrase boundaries to show every selected layout")
+    if log:
+        log("Layout modes: " + ", ".join(modes) + "; phrase sequence: " + " → ".join(sequence))
+        if "full-screen" in modes and options.get("fullSelectionMode", "face") == "scene":
+            log("Full-screen Scene selection does not match performer faces; choose Face match to require it")
     edges = [0.0, *boundaries, duration]
     maximum = max(0.5, float(options.get("maxClipSeconds", 5)))
     minimum = min(maximum, max(0.25, float(options.get("minClipSeconds", 1))))
@@ -124,15 +134,27 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     clips = []
     outgoing = None
     previous_role = None
-    expansion_turn = 0
+    last_expanded_grid_pane = None
 
     def source_allowed(state, at, length):
         source = state["source"]
+        if not source.get("tagOnly"):
+            return (at >= max(0.0, float(options.get("minimumTimestampSeconds") or 0)) - 0.001
+                    and at + length <= float(source["duration"]) - max(0.0, float(options.get("endBufferSeconds") or 0)) + 0.001)
         return any(row.start - 0.001 <= at and at + length <= row.end + 0.001
                    for row in permitted_ranges(source, options, bool(source.get("tagOnly"))))
 
+    def underlay_start(state, at, length):
+        source_end = state["start"] + at - state["began"]
+        if source_allowed(state, source_end, length):
+            return source_end
+        replay = source_end - length
+        return replay if source_allowed(state, replay, length) else None
+
     for phase_index, (phase_start, phase_end) in enumerate(zip(edges, edges[1:])):
-        role = multi_role if phase_index % 2 == 0 else "full-screen"
+        role = sequence[phase_index % len(sequence)]
+        if log:
+            log(f"Starting {role} phrase at song {clock_time(phase_start)}")
         count = {"three-pane": 3, "grid": 4, "full-screen": 1}[role]
         events = _phase_events(phase_start, phase_end, role, beats, bars, phrases, options, phase_index == 0)
         times = sorted(set(events) | {phase_end})
@@ -142,7 +164,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
             if cancel and cancel.is_set():
                 raise InterruptedError("Edit cancelled")
             changed = sorted(events.get(left, ()))
-            pair_mode = role == "three-pane" and len(multi_pool) <= 2 and options.get("mirrorRepeatedSource", True)
+            pool_for_role = grid_pool if role == "grid" else portrait_pool if role == "three-pane" else eligible
+            pair_mode = role == "three-pane" and len(pool_for_role) <= 2 and options.get("mirrorRepeatedSource", True)
             if pair_mode and 2 in changed and 0 not in changed and states[0] is None:
                 changed.append(0)
             for pane in changed:
@@ -151,46 +174,46 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                     continue
                 future = next((at for at in times[event_index + 1:] if pane in events.get(at, ())), phase_end)
                 required = min(maximum, max(minimum, future - left))
-                selection = (options.get("fullSelectionMode", "scene") if role == "full-screen"
+                selection = (options.get("fullSelectionMode", "face") if role == "full-screen"
                              else "center" if role == "three-pane" and options.get("useVerticalVideosOnly")
                              else options.get("selectionMode", "face"))
                 aspect = output_width / output_height if role != "three-pane" else output_width / (3 * output_height)
                 chosen = None
                 # An expanded clip starts at the exact next source frame of its visible cell.
                 if pane == 0 and role == "full-screen" and previous_role in ("grid", "three-pane") and left == phase_start:
-                    allow_expansion = previous_role == "grid" or expansion_turn % 2 == 0
-                    expansion_turn += 1
-                    if allow_expansion:
-                        for old_pane, previous in enumerate(outgoing or []):
-                            if previous is None:
+                    candidates = list(enumerate(outgoing or []))
+                    rng.shuffle(candidates)
+                    if previous_role == "grid" and last_expanded_grid_pane is not None and len(candidates) > 1:
+                        candidates.sort(key=lambda pair: pair[0] == last_expanded_grid_pane)
+                    for old_pane, previous in candidates:
+                        if previous is None:
+                            continue
+                        start = previous["start"] + left - previous["began"]
+                        transition = min(0.5, required / 3)
+                        if not source_allowed(previous, start, required):
+                            continue
+                        evidence = ((), None, None)
+                        if selection == "face":
+                            evidence = matcher.analyze_match(previous["source"]["path"], start, required, aspect,
+                                                             bool(options.get("keepFaceCentered", True)), cancel)
+                            if not evidence:
                                 continue
-                            start = previous["start"] + left - previous["began"]
-                            transition = min(0.5, required / 3)
-                            if not source_allowed(previous, start, required):
-                                continue
-                            if not all(state is None or source_allowed(state, state["start"] + left - state["began"], transition)
-                                       for state in outgoing):
-                                continue
-                            evidence = ((), None, None)
-                            if selection == "face":
-                                evidence = matcher.analyze_match(previous["source"]["path"], start, required, aspect,
-                                                                 bool(options.get("keepFaceCentered", True)), cancel)
-                                if not evidence:
-                                    continue
-                            track, performer, similarity = evidence
-                            chosen = dict(source=previous["source"], start=start, segment=previous["segment"],
-                                          crop=track[0][1] if track else 0.5, track=track, performer=performer,
-                                          began=left, expansion_from=old_pane, expansion_duration=transition,
-                                          expansion_layout=previous_role)
-                            expansion = chosen
-                            if log:
-                                log(f"Expanding {previous_role} cell {old_pane + 1} to full screen at song {clock_time(left)} "
-                                    f"from video {previous['source']['id']}, source {clock_time(start)}")
-                            break
+                        track, performer, similarity = evidence
+                        chosen = dict(source=previous["source"], start=start, segment=previous["segment"],
+                                      crop=track[0][1] if track else 0.5, track=track, performer=performer,
+                                      began=left, expansion_from=old_pane, expansion_duration=transition,
+                                      expansion_layout=previous_role)
+                        expansion = chosen
+                        if previous_role == "grid":
+                            last_expanded_grid_pane = old_pane
+                        if log:
+                            log(f"Expanding {previous_role} cell {old_pane + 1} to full screen at song {clock_time(left)} "
+                                f"from video {previous['source']['id']}, source {clock_time(start)}")
+                        break
                     if chosen is None and log:
                         log(f"Using a phrase-aligned cut to full screen at {clock_time(left)}; no continuous cell qualifies")
                 if chosen is None:
-                    pool = eligible if role == "full-screen" else multi_pool
+                    pool = pool_for_role
                     candidates = pool[serial % len(pool):] + pool[:serial % len(pool)]
                     candidates.sort(key=lambda source: int(source["id"]) in seen)
                     for offset, source in enumerate(candidates):
@@ -239,8 +262,12 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                 for old_pane, state in enumerate(outgoing or []):
                     if state is None:
                         continue
-                    offset = left - state["began"]
-                    clips.append(Clip(int(state["source"]["id"]), state["source"]["path"], state["start"] + offset,
+                    start = underlay_start(state, left, expansion["expansion_duration"])
+                    if start is None:
+                        if log:
+                            log(f"Cell {old_pane + 1} cannot remain visible during the expansion at {clock_time(left)}")
+                        continue
+                    clips.append(Clip(int(state["source"]["id"]), state["source"]["path"], start,
                                       expansion["expansion_duration"], left, old_pane, state["segment"], False,
                                       state["crop"], (), state["performer"], False, previous_role,
                                       None, 0.0, True))

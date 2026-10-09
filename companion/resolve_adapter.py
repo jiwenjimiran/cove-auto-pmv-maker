@@ -10,11 +10,11 @@ import uuid
 import math
 from pathlib import Path
 
-from engine import option_range, probe, run
+from engine import layout_modes, option_range, probe, run
 
 MODULES = Path(os.environ.get("RESOLVE_SCRIPT_API", r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting")) / "Modules"
 VALIDATION = Path(__file__).with_name("validated-version.json")
-VALIDATION_SCHEMA = 4
+VALIDATION_SCHEMA = 5
 sys.path.insert(0, str(MODULES))
 
 
@@ -126,6 +126,37 @@ def grade(item, treatment, luma):
                        "Offset": "0 0 0", "Power": "1 1 1", "Saturation": "1"}), "color treatment")
 
 
+def select_mp4_codec(project, requested, apply=False):
+    """Use the codec identifiers exposed by this Resolve installation."""
+    labels = {"h264": "H.264", "h265": "H.265", "av1": "AV1"}
+    if requested not in labels:
+        raise ValueError("Choose H.264, H.265, or AV1 for MP4 rendering")
+    available = project.GetRenderCodecs("mp4") or {}
+    def matches(label, value):
+        combined = re.sub(r"[^a-z0-9]", "", f"{label} {value}".lower())
+        if requested == "h264":
+            return ("h264" in combined or "avc" in combined) and "h265" not in combined
+        if requested == "h265":
+            return "h265" in combined or "hevc" in combined
+        return "av1" in combined
+    candidates = [(label, value) for label, value in available.items() if matches(label, value)]
+    if requested == "av1":
+        candidates.sort(key=lambda pair: ("8bit" not in re.sub(r"[^a-z0-9]", "", pair[0].lower()), pair[0]))
+    else:
+        candidates.sort(key=lambda pair: (pair[0].lower() != labels[requested].lower(), pair[0]))
+    if not candidates:
+        choices = ", ".join(available) or "none"
+        raise RuntimeError(f"Resolve Studio does not offer {labels[requested]} for MP4 on this PC. "
+                           f"Available MP4 codecs: {choices}. Choose another render codec in Auto PMV Maker settings.")
+    if apply:
+        for label, value in candidates:
+            if project.SetCurrentRenderFormatAndCodec("mp4", value):
+                return label, value
+        raise RuntimeError(f"Resolve Studio lists {labels[requested]} for MP4, but rejected every available "
+                           f"{labels[requested]} encoder on this PC. Choose another render codec in Auto PMV Maker settings.")
+    return candidates[0]
+
+
 def animate_expansion(item, clip, role, width, height, fps):
     """Animate original-resolution media from its cell to full frame in Fusion."""
     frames = max(4, round(clip.expansion_duration * fps))
@@ -228,9 +259,10 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         timeline = check(media_pool.CreateEmptyTimeline(project_name), "CreateEmptyTimeline")
         check(project.SetCurrentTimeline(timeline), "SetCurrentTimeline")
         check(timeline.SetStartTimecode("00:00:00:00"), "timeline start timecode")
-        layout = options.get("layout", "three-pane")
-        pane_count = 4 if layout in ("grid", "grid-full") else 3 if layout in ("three-pane", "three-pane-full") else 1
-        hybrid = layout in ("three-pane-full", "grid-full")
+        layout = options.get("layout", "full-screen")
+        modes = layout_modes(options, layout)
+        pane_count = 4 if "grid" in modes else 3 if "three-pane" in modes else 1
+        hybrid = "full-screen" in modes and pane_count > 1
         main_tracks = pane_count + (1 if hybrid else 0)
         source_sizes = {}
         if pane_count > 1:
@@ -275,7 +307,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             return position[1]
 
         def clip_role(clip):
-            return clip.layout_role or ("grid" if layout == "grid" else "three-pane" if pane_count == 3 else "full-screen")
+            return clip.layout_role or modes[0]
 
         def main_track(clip):
             return main_tracks if hybrid and clip_role(clip) == "full-screen" else clip.pane + 1
@@ -417,11 +449,8 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         if not result:
             raise RuntimeError("Resolve could not place the final audio mix")
         check(manager.SaveProject(), "SaveProject")
-        codecs = project.GetRenderCodecs("mp4") or {}
-        codec = next((value for label, value in codecs.items() if "264" in label or "264" in value), None)
-        if codec is None:
-            raise RuntimeError("Resolve has no H.264 MP4 render codec")
-        check(project.SetCurrentRenderFormatAndCodec("mp4", codec), "H.264 MP4 render format")
+        requested_codec = options.get("outputCodec", "h264")
+        codec_label, codec = select_mp4_codec(project, requested_codec, apply=True)
         check(project.SetCurrentRenderMode(1), "single clip render mode")
         settings = {"SelectAllFrames": True, "TargetDir": str(Path(output_path).parent),
                     "CustomName": Path(output_path).stem, "ExportVideo": True, "ExportAudio": True,
@@ -430,7 +459,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         for key, value in settings.items():
             check(project.SetRenderSettings({key: value}), f"render setting {key}={value!r}")
         job_id = check(project.AddRenderJob(), "AddRenderJob")
-        progress(55, "Rendering H.264 MP4 in Resolve")
+        progress(55, f"Rendering {codec_label} MP4 in Resolve")
         check(project.StartRendering(job_id), "StartRendering")
         while project.IsRenderingInProgress():
             if cancel.is_set():
@@ -445,6 +474,12 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             raise RuntimeError("Resolve render failed: " + str(status))
         if not Path(output_path).is_file() or Path(output_path).stat().st_size == 0:
             raise RuntimeError("Resolve reported completion but produced no MP4")
+        video_stream = next((stream for stream in probe(output_path)["streams"]
+                             if stream["codec_type"] == "video"), None)
+        expected_codec = {"h264": "h264", "h265": "hevc", "av1": "av1"}[requested_codec]
+        if video_stream is None or video_stream.get("codec_name") != expected_codec:
+            raise RuntimeError(f"Resolve rendered {video_stream.get('codec_name') if video_stream else 'no video'} "
+                               f"instead of requested {codec_label}")
         if options.get("saveProject"):
             target = Path(project_folder or Path(output_path).parent)
             target.mkdir(parents=True, exist_ok=True)

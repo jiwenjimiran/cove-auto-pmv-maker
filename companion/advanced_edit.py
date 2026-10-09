@@ -71,13 +71,13 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     eligible = [s for s in sources if cursors[int(s["id"])].ranges]
     if not eligible:
         raise ValueError("Timestamp bounds leave no usable source ranges")
-    selection = (options.get("fullSelectionMode", "scene") if panes == 1 else
+    selection = (options.get("fullSelectionMode", "face") if panes == 1 else
                  options.get("selectionMode", "face") if not options.get("useVerticalVideosOnly") else "center")
     matcher = None
     if selection == "face":
         from face_analysis import FaceAnalyzer
         matcher = FaceAnalyzer(references=references if options.get("matchSelectedPerformers", True) else None,
-                               threshold=float(options.get("faceSimilarityThreshold", 0.45)))
+                               threshold=float(options.get("faceSimilarityThreshold", 0.55)))
         if options.get("matchSelectedPerformers", True) and not matcher.references:
             raise ValueError("No usable reference face for selected performers. Choose performers with portrait or Cove face images, or disable performer matching.")
     reference_names = {int(row["performerId"]): row.get("performerName") or f"performer #{row['performerId']}"

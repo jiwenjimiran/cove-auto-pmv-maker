@@ -24,6 +24,11 @@
 .pmv-advanced[open]>summary{margin-bottom:12px}
 .pmv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:8px 18px}
 .pmv-checkbox-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 14px}
+.pmv-layout-choices{margin:0 0 13px;padding:11px 13px 8px;border:1px solid var(--pmv-border);border-radius:10px;background:var(--pmv-surface)}
+.pmv-layout-choices legend{display:flex;align-items:center;gap:7px;padding:0 5px;color:var(--pmv-text);font-size:12px;font-weight:700}
+.pmv-layout-choices .pmv-checkbox-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.pmv-layout-choices .pmv-control{margin:0}
+.pmv-layout-choices>small{display:block;margin:9px 1px 2px;color:var(--pmv-muted)}
 .pmv-control{display:flex;flex-direction:column;gap:6px;min-width:0;margin:5px 0 10px}
 .pmv-control-heading{display:flex;align-items:center;gap:7px;min-height:21px}
 .pmv-control-heading label{margin:0;color:var(--pmv-text);font-size:12px;font-weight:650;cursor:pointer}
@@ -108,7 +113,7 @@
 .pmv-chevron{width:6px;height:6px;border-right:1.5px solid var(--pmv-muted);border-bottom:1.5px solid var(--pmv-muted);transform:rotate(-45deg)}
 .pmv-tree-expand.is-open .pmv-chevron{transform:rotate(45deg)}
 .pmv-tree-hint,.pmv-tree-empty{display:block;margin:5px 8px 7px 30px;color:var(--pmv-muted);font-size:11px}
-@media(max-width:640px){.pmv-settings{padding:4px 0 24px}.pmv-panel{padding:15px}.pmv-dialog{padding:18px}.pmv-checkbox-grid{grid-template-columns:1fr}.pmv-folder-browser-foot{align-items:stretch;flex-direction:column}}
+@media(max-width:640px){.pmv-settings{padding:4px 0 24px}.pmv-panel{padding:15px}.pmv-dialog{padding:18px}.pmv-checkbox-grid,.pmv-layout-choices .pmv-checkbox-grid{grid-template-columns:1fr}.pmv-folder-browser-foot{align-items:stretch;flex-direction:column}}
 .pmv-face-picker { margin: 1rem 0; }
 .pmv-face-picker p { margin: .4rem 0 .8rem; color: var(--text-secondary, #aeb4c0); }
 .pmv-face-actions { display: flex; align-items: center; gap: .5rem; margin: .7rem 0; flex-wrap: wrap; }

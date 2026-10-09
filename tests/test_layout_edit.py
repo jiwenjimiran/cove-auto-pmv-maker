@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
 
 from layout_edit import edit_plan
 from music_analysis import BeatGrid
-from engine import choose_format
+from engine import choose_format, layout_modes
+from face_analysis import FaceAnalyzer
 
 
 def source(ident, portrait=False, segments=None):
@@ -52,6 +53,40 @@ class LayoutEditTests(unittest.TestCase):
         self.assertAlmostEqual(expanded.source_start + 16 - expanded.record_start, first_full.source_start)
         self.assertEqual(4, len([c for c in clips if c.underlay and c.record_start == 16]))
         self.assertEqual({"grid"}, {c.layout_role for c in clips if c.record_start == 24 and not c.underlay})
+
+    def test_grid_and_full_never_includes_portrait_panes(self):
+        clips = self.plan([source(i) for i in range(1, 6)], "full-screen",
+                          layoutModes=["grid", "full-screen"])
+        self.assertEqual({"grid", "full-screen"}, {c.layout_role for c in clips})
+
+    def test_triple_portrait_expands_when_continuous_footage_exists(self):
+        clips = self.plan([source(i) for i in range(1, 6)], "full-screen",
+                          layoutModes=["three-pane", "full-screen"])
+        first_full = next(c for c in clips if c.layout_role == "full-screen" and c.record_start == 16)
+        self.assertIsNotNone(first_full.expansion_from)
+        self.assertEqual("three-pane", first_full.expansion_layout)
+
+    def test_grid_expansion_corner_varies_across_random_seeds(self):
+        corners = set()
+        for seed in range(12):
+            clips = self.plan([source(i) for i in range(1, 6)], "full-screen",
+                              layoutModes=["grid", "full-screen"], randomSeed=seed)
+            first_full = next(c for c in clips if c.layout_role == "full-screen" and c.record_start == 16)
+            corners.add(first_full.expansion_from)
+        self.assertGreaterEqual(len(corners), 3)
+
+    def test_all_three_checked_modes_appear(self):
+        clips = self.plan([source(i) for i in range(1, 6)], "full-screen",
+                          layoutModes=["grid", "three-pane", "full-screen"])
+        self.assertEqual({"grid", "three-pane", "full-screen"},
+                         {c.layout_role for c in clips})
+
+    def test_no_checked_modes_defaults_to_full_screen(self):
+        self.assertEqual(["full-screen"], layout_modes({"layoutModes": [], "layout": "grid"}))
+
+    def test_performer_match_threshold_never_below_fifty_five_percent(self):
+        self.assertEqual(0.55, FaceAnalyzer(threshold=0.45).threshold)
+        self.assertEqual(0.7, FaceAnalyzer(threshold=0.7).threshold)
 
     def test_segment_intervals_limit_all_selected_source_time(self):
         segments = [{"id": 1, "start": 40, "end": 100}]

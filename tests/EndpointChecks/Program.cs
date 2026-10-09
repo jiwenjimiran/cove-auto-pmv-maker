@@ -17,7 +17,7 @@ await File.WriteAllBytesAsync(Path.Combine(musicRoot, "song.mp3"), [1, 2, 3, 4, 
 await File.WriteAllBytesAsync(Path.Combine(fixtureRoot, "outside.mp3"), [7, 8, 9]);
 var pmvExtension = new PmvMakerExtension();
 pmvExtension.SetStore(new MemoryStore(JsonSerializer.Serialize(new { musicFolder = musicRoot,
-    defaults = new { colorTreatment = "matched" } })));
+    defaults = new { colorTreatment = "matched", layout = "grid-full", fullSelectionMode = "scene", faceSimilarityThreshold = 0.45 } })));
 pmvExtension.MapEndpoints(app);
 await app.StartAsync();
 try
@@ -73,8 +73,12 @@ try
 
     using var defaults = await client.GetAsync(address + "/api/ext/pmv/defaults");
     using var defaultsJson = await ReadJson(defaults, HttpStatusCode.OK);
-    if (defaultsJson.RootElement.GetProperty("defaults").GetProperty("layout").GetString() != "three-pane")
-        throw new Exception("Defaults endpoint did not return JSON.");
+    var migrated = defaultsJson.RootElement.GetProperty("defaults");
+    if (migrated.GetProperty("layoutModes").EnumerateArray().Select(x => x.GetString()).SequenceEqual(["grid", "full-screen"]) == false
+        || migrated.GetProperty("faceSimilarityThreshold").GetDouble() != 0.55
+        || migrated.GetProperty("fullSelectionMode").GetString() != "face"
+        || migrated.GetProperty("outputCodec").GetString() != "h264")
+        throw new Exception("Older layout and face defaults were not migrated.");
 
     using var validation = await client.GetAsync(address + "/api/ext/pmv/validation");
     using var validationJson = await ReadJson(validation, HttpStatusCode.OK);

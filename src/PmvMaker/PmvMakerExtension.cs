@@ -32,7 +32,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.16";
+    public string Version => "0.1.17";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -381,8 +381,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 .Select(p => new { p.Id, p.Name, p.Gender,
                     HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && f.CoverBlobId != null && !f.Ignored) })
                 .ToArrayAsync(ctx.RequestAborted);
-            var gridShort = options.Layout is "grid" or "grid-full" && result.Videos.Count < 4;
-            var portraitShort = options.Layout is "three-pane-full" && options.UseVerticalVideosOnly
+            var modes = EffectiveLayoutModes(options);
+            var gridShort = modes.Contains("grid") && result.Videos.Count(video => video.Height <= video.Width) < 4;
+            var portraitShort = modes.Contains("three-pane") && options.UseVerticalVideosOnly
                 && !result.Videos.Any(video => video.Height > video.Width);
             return Results.Json(new { eligibleCount = result.Videos.Count, canCreate = result.Videos.Count > 0 && !gridShort && !portraitShort,
                 eligibilityNote = gridShort ? "Grid needs at least four eligible landscape videos." : portraitShort
@@ -415,9 +416,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 && !scope.ServiceProvider.GetRequiredService<IAuthorizationService>().Has(principal, "performers.read"))
                 return Results.Forbid();
             if (resolved.Videos.Count == 0) return Results.BadRequest(new { message = "No eligible sources.", exclusions = resolved.Exclusions });
-            if (requestedOptions.Layout is "grid" or "grid-full" && resolved.Videos.Count < 4)
+            var modes = EffectiveLayoutModes(requestedOptions);
+            if (modes.Contains("grid") && resolved.Videos.Count(video => video.Height <= video.Width) < 4)
                 return Results.BadRequest(new { message = "Grid needs at least four eligible landscape videos.", exclusions = resolved.Exclusions });
-            if (requestedOptions.Layout == "three-pane-full" && requestedOptions.UseVerticalVideosOnly
+            if (modes.Contains("three-pane") && requestedOptions.UseVerticalVideosOnly
                 && !resolved.Videos.Any(video => video.Height > video.Width))
                 return Results.BadRequest(new { message = "Three-pane phases need a portrait video.", exclusions = resolved.Exclusions });
             var health = await CompanionGetAsync(settings, "health", ctx.RequestAborted);
@@ -442,7 +444,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 sources = resolved.Videos.Select(v => new { path = ToHost(v.Path, settings) }),
                 audio,
                 outputFolder = ToHost(settings.OutputFolder, settings),
-                projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings)
+                projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings),
+                outputCodec = requestedOptions.OutputCodec
             });
             using var checkedResponse = await _http.SendAsync(preflight, ctx.RequestAborted);
             if (!checkedResponse.IsSuccessStatusCode)
@@ -470,14 +473,17 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static string? NewOptionError(PmvOptions options)
     {
-        if (options.Layout is not ("three-pane" or "full-screen" or "grid" or "three-pane-full" or "grid-full"))
-            return "Choose a supported PMV layout.";
+        if (options.LayoutModes is null || options.LayoutModes.Any(mode => mode is not ("grid" or "three-pane" or "full-screen"))
+            || options.LayoutModes.Distinct().Count() != options.LayoutModes.Length)
+            return "Choose each supported PMV layout mode at most once.";
+        if (options.OutputCodec is not ("h264" or "h265" or "av1"))
+            return "Choose H.264, H.265, or AV1 for the MP4 render.";
         if (options.FullSelectionMode is not ("scene" or "face"))
             return "Full-screen selection must be Scene or Face match.";
         if (options.SegmentTagIds is null || options.SegmentTagIds.Length > 100 || options.SegmentTagIds.Any(id => id <= 0))
             return "Segment list must contain at most 100 valid tags.";
-        if (options.FaceSimilarityThreshold is < 0.3 or > 0.8 || !double.IsFinite(options.FaceSimilarityThreshold))
-            return "Face similarity threshold must be between 0.30 and 0.80.";
+        if (options.FaceSimilarityThreshold is < 0.55 or > 0.8 || !double.IsFinite(options.FaceSimilarityThreshold))
+            return "Face slice performer match minimum must be between 55% and 80% SFace similarity.";
         if (options.MinimumTimestampSeconds < 0 || options.EndBufferSeconds < 0
             || !double.IsFinite(options.MinimumTimestampSeconds) || !double.IsFinite(options.EndBufferSeconds))
             return "Clip timestamp and end buffer must be nonnegative seconds.";
@@ -507,8 +513,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var options = request.Options ?? settings.Defaults;
         var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct, options), options);
         if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
-        logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; layout {Layout}, selection {Selection}, audio {AudioKind}",
-            resolved.Videos.Count, resolved.Exclusions.Count, options.Layout, options.SelectionMode, request.Audio.Kind);
+        logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; modes {Modes}, selection {Selection}, audio {AudioKind}",
+            resolved.Videos.Count, resolved.Exclusions.Count, string.Join(",", EffectiveLayoutModes(options)), options.SelectionMode, request.Audio.Kind);
         var referenceIds = new List<string>();
         try
         {
@@ -685,7 +691,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var used = scope.Videos.Where(v => job.UsedVideoIds?.Contains(v.Id) == true).ToList();
         var tagIds = new HashSet<int>();
         if (options.KeepPerformers)
-            foreach (var id in (options.Layout == "three-pane" && options.SelectionMode == "face" && options.MatchSelectedPerformers
+            foreach (var id in (NeedsFaceReferences(options)
                 ? job.MatchedPerformerIds ?? [] : used.SelectMany(v => v.PerformerIds).Distinct()))
                 db.Set<VideoPerformer>().Add(new VideoPerformer { VideoId = videoId, PerformerId = id });
         if (options.KeepTags)
@@ -706,6 +712,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static ScopeResult FilterSourcesForLayout(ScopeResult source, PmvOptions options)
     {
+        var modes = EffectiveLayoutModes(options);
         var excluded = new List<string>(source.Exclusions);
         var eligible = new List<SourceVideo>();
         foreach (var video in source.Videos)
@@ -723,12 +730,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 excluded.Add($"Video {video.Id}: no matching timed segment inside timestamp limits");
                 continue;
             }
-            if (options.Layout is "grid" or "grid-full" && video.Height > video.Width)
+            if (modes.SequenceEqual(["grid"]) && video.Height > video.Width)
             {
                 excluded.Add($"Video {video.Id}: portrait source excluded from grid");
                 continue;
             }
-            if (options.Layout == "three-pane" && options.UseVerticalVideosOnly && video.Height <= video.Width)
+            if (modes.SequenceEqual(["three-pane"]) && options.UseVerticalVideosOnly && video.Height <= video.Width)
             {
                 excluded.Add($"Video {video.Id}: not vertical");
                 continue;
@@ -740,13 +747,23 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static bool NeedsFaceReferences(PmvOptions options)
     {
-        var multiFace = options.Layout is "three-pane" or "three-pane-full" or "grid" or "grid-full"
-            && (options.Layout is "grid" or "grid-full" || !options.UseVerticalVideosOnly)
-            && options.SelectionMode == "face";
-        var fullFace = options.Layout is "full-screen" or "three-pane-full" or "grid-full"
-            && options.FullSelectionMode == "face";
+        var modes = EffectiveLayoutModes(options);
+        var multiFace = options.SelectionMode == "face" && (modes.Contains("grid")
+            || modes.Contains("three-pane") && !options.UseVerticalVideosOnly);
+        var fullFace = modes.Contains("full-screen") && options.FullSelectionMode == "face";
         return options.MatchSelectedPerformers && (multiFace || fullFace);
     }
+
+    private static string[] EffectiveLayoutModes(PmvOptions options)
+        => options.LayoutModes is { Length: > 0 } ? options.LayoutModes : ["full-screen"];
+
+    private static string[] LegacyLayoutModes(string layout) => layout switch
+    {
+        "grid-full" => ["grid", "full-screen"],
+        "three-pane-full" => ["three-pane", "full-screen"],
+        "grid" or "three-pane" or "full-screen" => [layout],
+        _ => []
+    };
 
     private static bool OutputInScanRoot(string path, IServiceProvider services)
     {
@@ -770,6 +787,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             var settings = JsonSerializer.Deserialize<PmvSettings>(raw, Json) ?? new();
             settings.Defaults ??= new PmvOptions();
             using var document = JsonDocument.Parse(raw);
+            if (document.RootElement.TryGetProperty("defaults", out var rawDefaults)
+                && rawDefaults.ValueKind == JsonValueKind.Object
+                && !rawDefaults.TryGetProperty("layoutModes", out _)
+                && rawDefaults.TryGetProperty("layout", out _))
+                settings.Defaults.LayoutModes = LegacyLayoutModes(settings.Defaults.Layout);
+            settings.Defaults.FaceSimilarityThreshold = Math.Max(0.55, settings.Defaults.FaceSimilarityThreshold);
             if (!document.RootElement.TryGetProperty("colorDefaultsVersion", out _) && settings.Defaults.ColorTreatment == "matched")
                 settings.Defaults.ColorTreatment = "natural";
             settings.ColorDefaultsVersion = 1;
@@ -777,6 +800,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 && settings.Defaults.SelectionMode == "center")
                 settings.Defaults.SelectionMode = "face";
             settings.FaceDefaultsVersion = 1;
+            if (!document.RootElement.TryGetProperty("fullFaceDefaultsVersion", out _)
+                && settings.Defaults.FullSelectionMode == "scene")
+                settings.Defaults.FullSelectionMode = "face";
+            settings.FullFaceDefaultsVersion = 1;
             if (!document.RootElement.TryGetProperty("companionMode", out _))
                 settings.CompanionMode = LocalCompanion.IsSupported
                     && settings.PathMappings.Count == 0

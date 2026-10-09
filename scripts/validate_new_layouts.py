@@ -40,15 +40,16 @@ with tempfile.TemporaryDirectory(prefix="pmv-layouts-") as folder:
         if expansion:
             clips.extend(Clip(i + 1, str(videos[i]), 2, .5, 2, i, None, False, .5,
                               layout_role=role, underlay=True) for i in range(count))
-            clips.append(Clip(1, str(videos[0]), 2, 2, 2, 0, None, False, .5,
-                              layout_role="full-screen", expansion_from=0,
+            chosen = count - 1
+            clips.append(Clip(chosen + 1, str(videos[chosen]), 2, 2, 2, 0, None, False, .5,
+                              layout_role="full-screen", expansion_from=chosen,
                               expansion_duration=.5, expansion_layout=role))
         return clips
 
     for role, expansion in (("grid", False), ("grid", True), ("three-pane", True)):
         name = f"{role}-{'expansion' if expansion else 'plain'}"
         output = root / f"{name}.mp4"
-        options = {"layout": role + "-full" if expansion else role, "selectionMode": "center",
+        options = {"layoutModes": [role, "full-screen"] if expansion else [role], "selectionMode": "center",
                    "style": "rhythmic-polish", "colorTreatment": "natural", "transitionFamilies": ["cut"]}
         print("Rendering", name, flush=True)
         render(make(role, expansion), str(audio), str(output), 640, 360, 30, options, "",
@@ -60,5 +61,10 @@ with tempfile.TemporaryDirectory(prefix="pmv-layouts-") as folder:
             (105, 180), (320, 180), (535, 180)]
         print(name, "cells:", [pixels(*point) for point in sample], flush=True)
         if expansion:
-            print(name, "expansion 2.1s:", [frame(output, 2.1)(*point) for point in sample], flush=True)
-            print(name, "full 3s:", [frame(output, 3)(*point) for point in sample], flush=True)
+            middle = [frame(output, 2.25)(*point) for point in sample]
+            full = [frame(output, 3)(*point) for point in sample]
+            print(name, "expansion 2.25s:", middle, flush=True)
+            print(name, "full 3s:", full, flush=True)
+            assert all(max(abs(a - b) for a, b in zip(pixel, full[0])) < 10 for pixel in full)
+            expected = (252, 252, 0) if role == "grid" else (0, 0, 254)
+            assert max(abs(a - b) for a, b in zip(full[0], expected)) < 15

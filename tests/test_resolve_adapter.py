@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
-from resolve_adapter import set_item_property, source_frame_range
+from resolve_adapter import select_mp4_codec, set_item_property, source_frame_range
 
 
 class TimelinePropertyTests(unittest.TestCase):
@@ -61,6 +61,31 @@ class TimelinePropertyTests(unittest.TestCase):
         self.assertEqual(source_frame_range(9, 0, 1, 24, 240), (216, 239))
         with self.assertRaisesRegex(ValueError, "outside the video"):
             source_frame_range(10, 0, 1, 24, 240)
+
+    def test_mp4_codecs_use_resolve_identifiers_and_prefer_av1_eight_bit(self):
+        class Project:
+            def GetRenderCodecs(self, format_name):
+                self_format = format_name
+                assert self_format == "mp4"
+                return {"AV1 10-bit - NVIDIA": "AV1YUV420_10_NVIDIA",
+                        "AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA",
+                        "H.264": "H264", "H.265": "H265"}
+        project = Project()
+        self.assertEqual("H264", select_mp4_codec(project, "h264")[1])
+        self.assertEqual("H265", select_mp4_codec(project, "h265")[1])
+        self.assertEqual("AV1YUV420_8_NVIDIA", select_mp4_codec(project, "av1")[1])
+
+    def test_unavailable_codec_explains_available_choices(self):
+        project = SimpleNamespace(GetRenderCodecs=lambda _format: {"H.264": "H264"})
+        with self.assertRaisesRegex(RuntimeError, "does not offer AV1.*Available MP4 codecs: H.264"):
+            select_mp4_codec(project, "av1")
+
+    def test_listed_but_rejected_codec_fails_before_render(self):
+        project = SimpleNamespace(
+            GetRenderCodecs=lambda _format: {"AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA"},
+            SetCurrentRenderFormatAndCodec=lambda _format, _codec: False)
+        with self.assertRaisesRegex(RuntimeError, "lists AV1.*rejected every available AV1 encoder"):
+            select_mp4_codec(project, "av1", apply=True)
 
 
 if __name__ == "__main__":

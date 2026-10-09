@@ -25,19 +25,21 @@ public sealed class PmvSettings
     public List<PathMapping> PathMappings { get; set; } = [];
     public int ColorDefaultsVersion { get; set; } = 1;
     public int FaceDefaultsVersion { get; set; } = 1;
+    public int FullFaceDefaultsVersion { get; set; } = 1;
     public PmvOptions Defaults { get; set; } = new();
 }
 
 public sealed class PmvOptions
 {
-    public string Layout { get; set; } = "three-pane";
+    public string Layout { get; set; } = "full-screen";
+    public string[] LayoutModes { get; set; } = [];
     public bool UseVerticalVideosOnly { get; set; }
     public string SelectionMode { get; set; } = "face";
-    public string FullSelectionMode { get; set; } = "scene";
+    public string FullSelectionMode { get; set; } = "face";
     public int[] SegmentTagIds { get; set; } = [];
     public bool KeepFaceCentered { get; set; } = true;
     public bool MatchSelectedPerformers { get; set; } = true;
-    public double FaceSimilarityThreshold { get; set; } = 0.45;
+    public double FaceSimilarityThreshold { get; set; } = 0.55;
     public bool MirrorRepeatedSource { get; set; } = true;
     public bool SampledClipsProgress { get; set; } = true;
     public double MinimumTimestampSeconds { get; set; }
@@ -66,6 +68,7 @@ public sealed class PmvOptions
     public double? SongTrimStart { get; set; }
     public double? SongTrimEnd { get; set; }
     public int? OutputFps { get; set; }
+    public string OutputCodec { get; set; } = "h264";
     public bool SaveProject { get; set; }
     public bool ScanToCove { get; set; } = true;
     public bool KeepPerformers { get; set; } = true;

@@ -16,6 +16,34 @@ import server
 
 
 class CompanionApiTests(unittest.TestCase):
+    def test_preflight_rejects_listed_but_unusable_av1_before_job(self):
+        class Project:
+            def GetRenderCodecs(self, _format):
+                return {"AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA"}
+            def GetCurrentRenderFormatAndCodec(self):
+                return {}
+            def SetCurrentRenderFormatAndCodec(self, _format, _codec):
+                return False
+        project = Project()
+        deleted = []
+        manager = types.SimpleNamespace(
+            GetCurrentProject=lambda: None,
+            CreateProject=lambda _name: project,
+            CloseProject=lambda _project: True,
+            DeleteProject=lambda name: deleted.append(name))
+        resolve = types.SimpleNamespace(GetProjectManager=lambda: manager)
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.mp4"
+            audio = Path(root) / "song.wav"
+            source.touch()
+            audio.touch()
+            payload = {"sources": [{"path": str(source)}], "audio": {"path": str(audio)},
+                       "outputFolder": root, "outputCodec": "av1"}
+            with patch.object(server, "connect", return_value=resolve):
+                with self.assertRaisesRegex(RuntimeError, "rejected every available AV1 encoder"):
+                    server.preflight(payload)
+        self.assertEqual(1, len(deleted))
+
     def test_job_diagnostics_have_ordered_cursor_and_bounded_history(self):
         state = {"id": "job", "state": "running", "progress": 33, "message": "Matching faces",
                  "cancelEvent": threading.Event(), "eventLock": threading.Lock(),

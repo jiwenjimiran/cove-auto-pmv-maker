@@ -144,6 +144,34 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 3px 14px;
 }
+.pmv-layout-choices {
+  margin: 0 0 13px;
+  padding: 11px 13px 8px;
+  border: 1px solid var(--pmv-border);
+  border-radius: 10px;
+  background: var(--pmv-surface);
+}
+.pmv-layout-choices legend {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 5px;
+  color: var(--pmv-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.pmv-layout-choices .pmv-checkbox-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.pmv-layout-choices .pmv-control {
+  margin: 0;
+}
+.pmv-layout-choices > small {
+  display: block;
+  margin: 9px 1px 2px;
+  color: var(--pmv-muted);
+}
 .pmv-control {
   display: flex;
   flex-direction: column;
@@ -674,7 +702,8 @@
   .pmv-dialog {
     padding: 18px;
   }
-  .pmv-checkbox-grid {
+  .pmv-checkbox-grid,
+  .pmv-layout-choices .pmv-checkbox-grid {
     grid-template-columns: 1fr;
   }
   .pmv-folder-browser-foot {

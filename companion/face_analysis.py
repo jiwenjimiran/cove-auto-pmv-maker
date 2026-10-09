@@ -14,7 +14,7 @@ def clamp(value, lower, upper):
 
 
 class FaceAnalyzer:
-    def __init__(self, references=None, threshold=0.45):
+    def __init__(self, references=None, threshold=0.55):
         try:
             import cv2
         except ImportError as exc:
@@ -27,7 +27,7 @@ class FaceAnalyzer:
         self.reference_vectors = None
         self.reference_ids = []
         self.recognizer = None
-        self.threshold = threshold
+        self.threshold = max(0.55, float(threshold))
         if references is not None:
             if not RECOGNITION_MODEL.is_file():
                 raise RuntimeError("Bundled SFace recognition model is missing. Reinstall the extension.")
