@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
-from resolve_adapter import set_item_property
+from resolve_adapter import set_item_property, source_frame_range
 
 
 class TimelinePropertyTests(unittest.TestCase):
@@ -51,6 +51,16 @@ class TimelinePropertyTests(unittest.TestCase):
         item = Item()
         set_item_property(item, "Scaling", 3.0, "pane scaling", self.clip, 1)
         self.assertEqual(item.properties["Scaling"], 3.0)
+
+    def test_source_ranges_use_source_fps_not_timeline_fps(self):
+        start, end = source_frame_range(14.71, 0, 2.0, 23.976, 51306)
+        self.assertEqual((start, end), (353, 401))
+        self.assertNotEqual(start, round(14.71 * 30))
+
+    def test_source_range_stays_inside_last_frame(self):
+        self.assertEqual(source_frame_range(9, 0, 1, 24, 240), (216, 239))
+        with self.assertRaisesRegex(ValueError, "outside the video"):
+            source_frame_range(10, 0, 1, 24, 240)
 
 
 if __name__ == "__main__":

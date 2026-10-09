@@ -7,6 +7,7 @@ import time
 import re
 import json
 import uuid
+import math
 from pathlib import Path
 
 from engine import option_range, probe, run
@@ -90,6 +91,20 @@ def media_key(path):
     return os.path.normcase(os.path.realpath(path))
 
 
+def source_frame_range(source_start, offset, length, source_fps, source_frames):
+    """Convert edit seconds to source frames; Resolve interprets these in source timebase."""
+    if source_fps <= 0 or source_frames <= 0:
+        raise ValueError("Source video has no valid frame rate or frame count")
+    start = round((source_start + offset) * source_fps)
+    if start < 0 or start >= source_frames:
+        raise ValueError(f"Source position {source_start + offset:.3f}s is outside the video")
+    # Resolve's inclusive endFrame produces a timeline item up to two frames
+    # shorter than the nominal duration when a 23.976 source enters a 30 fps
+    # timeline. One extra source frame covers the cut without a black gap.
+    count = min(source_frames - start, max(1, math.ceil(length * source_fps) + 1))
+    return start, start + count - 1
+
+
 def source_luma(path):
     # A tiny decode sample gives a stable brightness target without copying the master.
     try:
@@ -149,6 +164,17 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 raise RuntimeError("Resolve did not import " + path + "; item count: " + str(len(imported or []))
                                    + "; folder count: " + str(len(folder.GetClipList() or []))
                                    + "; first properties: " + repr(sample))
+        source_rates = {}
+        source_frames = {}
+        for path in {clip.path for clip in clips}:
+            item = items[media_key(path)]
+            try:
+                source_rates[path] = float(item.GetClipProperty("FPS"))
+                source_frames[path] = int(item.GetClipProperty("Frames"))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"Resolve cannot report source frame rate and length for {path}") from exc
+            if source_rates[path] <= 0 or source_frames[path] <= 0:
+                raise RuntimeError(f"Resolve reported invalid source frame rate or length for {path}")
         timeline = check(media_pool.CreateEmptyTimeline(project_name), "CreateEmptyTimeline")
         check(project.SetCurrentTimeline(timeline), "SetCurrentTimeline")
         check(timeline.SetStartTimecode("00:00:00:00"), "timeline start timecode")
@@ -200,15 +226,21 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             if cancel.is_set():
                 raise InterruptedError("Timeline build cancelled")
             source = items[media_key(clip.path)]
-            start = round((clip.source_start + offset) * fps)
-            count = max(1, round(length * fps))
+            start, end = source_frame_range(clip.source_start, offset, length,
+                                            source_rates[clip.path], source_frames[clip.path])
             at = round(record_start * fps)
-            entry = {"mediaPoolItem": source, "startFrame": start, "endFrame": start + count - 1,
+            entry = {"mediaPoolItem": source, "startFrame": start, "endFrame": end,
                      "recordFrame": at, "trackIndex": track_index, "mediaType": 1}
             result = media_pool.AppendToTimeline([entry])
             if not result:
-                raise RuntimeError(f"Resolve could not append video {clip.video_id} at {at} on track {track_index}; source frames {start}-{start + count - 1}; video tracks {timeline.GetTrackCount('video')}; timeline frames {timeline.GetStartFrame()}-{timeline.GetEndFrame()}; track items {len(timeline.GetItemListInTrack('video', track_index) or [])}")
+                raise RuntimeError(f"Resolve could not append video {clip.video_id} at {at} on track {track_index}; source frames {start}-{end}; video tracks {timeline.GetTrackCount('video')}; timeline frames {timeline.GetStartFrame()}-{timeline.GetEndFrame()}; track items {len(timeline.GetItemListInTrack('video', track_index) or [])}")
             item = result[0]
+            if item.GetProperties() is None:
+                raise RuntimeError(
+                    f"Resolve could not place video {clip.video_id} ({Path(clip.path).name}) on track {track_index} "
+                    f"at {record_start:.2f}s: the requested source range {start}-{end} at "
+                    f"{source_rates[clip.path]:.3f} fps produced no editable timeline item. "
+                    "A clip already on this track may cover that position.")
             def set_property(key, value, label):
                 set_item_property(item, key, value, label, clip, track_index, project_fill=True)
             base_zoom = 1.0
