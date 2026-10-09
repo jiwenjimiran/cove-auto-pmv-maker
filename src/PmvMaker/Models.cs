@@ -110,5 +110,6 @@ public sealed record ScopeResult(IReadOnlyList<SourceVideo> Videos, IReadOnlyLis
 
 public sealed record CompanionJob(string Id, string State, double Progress, string? Message,
     string? OutputPath, int[]? UsedVideoIds, int[]? UsedSegmentIds, string? Error,
-    int[]? MatchedPerformerIds = null);
-public sealed record FaceReference(int PerformerId, string ReferenceId);
+    int[]? MatchedPerformerIds = null, IReadOnlyList<CompanionLogEvent>? Events = null);
+public sealed record CompanionLogEvent(long Sequence, string Level, string Message);
+public sealed record FaceReference(int PerformerId, string ReferenceId, string? PerformerName = null);

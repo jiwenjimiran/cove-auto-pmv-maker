@@ -84,7 +84,7 @@ class SourceCursor:
         self.position = None
         self.current_segment_id = None
 
-    def next(self, length, accept=None):
+    def next(self, length, accept=None, on_window=None):
         if not self.ranges:
             return None
         attempts = 0
@@ -99,6 +99,8 @@ class SourceCursor:
                     continue
                 free = source_range.end - source_range.start - window_length
                 window_start = source_range.start + (self.rng.random() * free if free > 0 else 0)
+                if on_window:
+                    on_window(attempts, window_start, window_length, source_range)
                 self.shots = [(a, b, source_range.segment_id) for a, b in
                               scene_ranges(self.source["path"], window_start, window_length, self.cancel)]
                 self.position = self.shots[0][0] if self.shots else None

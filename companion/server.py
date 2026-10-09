@@ -20,7 +20,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, mix_audio, output_stem, prepare_audio, reserve_output
 from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render
@@ -91,7 +91,8 @@ def face_references(rows):
         path = REFERENCE_ROOT / reference_id
         if not path.is_file():
             raise ValueError("Performer face reference expired; create the job again")
-        result.append({"performerId": int(row["performerId"]), "dataBase64": base64.b64encode(path.read_bytes()).decode("ascii")})
+        result.append({"performerId": int(row["performerId"]), "performerName": str(row.get("performerName") or "")[:200],
+                       "dataBase64": base64.b64encode(path.read_bytes()).decode("ascii")})
     return result
 
 
@@ -219,6 +220,30 @@ def preflight(payload):
     return sources
 
 
+def log_job_event(state, message, level="info"):
+    """Keep ordered diagnostics until Cove has polled and written them to its logs."""
+    with state["eventLock"]:
+        state["eventSequence"] += 1
+        state["events"].append({"sequence": state["eventSequence"], "level": level,
+                                "message": str(message)})
+        if len(state["events"]) > 4000:
+            del state["events"][:len(state["events"]) - 4000]
+
+
+def job_snapshot(state, after=0):
+    with state["eventLock"]:
+        result = {k: v for k, v in state.items() if k not in ("cancelEvent", "eventLock", "events")}
+        events = state["events"]
+        if events and after < events[0]["sequence"] - 1:
+            result["events"] = [{"sequence": events[0]["sequence"] - 1, "level": "warning",
+                                 "message": "Some companion diagnostics expired before Cove fetched them."}]
+            result["events"].extend(event for event in events if event["sequence"] > after)
+        else:
+            result["events"] = [event for event in events if event["sequence"] > after]
+        result["events"] = result["events"][:250]
+        return result
+
+
 def do_job(job_id, payload):
     state = JOBS[job_id]
     cancelled = state["cancelEvent"]
@@ -227,6 +252,7 @@ def do_job(job_id, payload):
 
     def update(progress, message):
         state.update(progress=progress, message=message)
+        log_job_event(state, message)
 
     with RENDER_LOCK:
         try:
@@ -257,7 +283,8 @@ def do_job(job_id, payload):
                 update(25, f"Finding usable footage in {len(sources)} eligible videos")
                 from advanced_edit import edit_plan as advanced_plan
                 clips = advanced_plan(sources, beats, options, options["layout"], cancelled, update,
-                                      face_references(payload.get("references") or []))
+                                      face_references(payload.get("references") or []),
+                                      lambda message: log_job_event(state, message))
                 if cancelled.is_set():
                     raise InterruptedError("Cancelled")
                 used_video_ids = sorted({c.video_id for c in clips})
@@ -275,12 +302,16 @@ def do_job(job_id, payload):
                 update(52, f"Importing {len(used_video_ids)} used videos into Resolve")
                 render(clips, mix, output_path, width, height, fps, options, payload.get("projectFolder", ""), cancelled, update,
                        require_validation=not skip_checks)
+                log_job_event(state, f"Render complete: {len(clips)} timeline clips from "
+                                    f"{len(used_video_ids)} source videos; output {output_path}")
                 state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,
                              usedVideoIds=used_video_ids, usedSegmentIds=used_segment_ids,
                              matchedPerformerIds=matched_performer_ids)
         except InterruptedError:
+            log_job_event(state, "Render cancelled", "warning")
             state.update(state="cancelled", message="Render cancelled")
         except Exception as exc:
+            log_job_event(state, "Render failed: " + str(exc), "error")
             state.update(state="failed", error=str(exc), message="Render failed")
             traceback.print_exc()
         finally:
@@ -328,7 +359,11 @@ class Handler(BaseHTTPRequestHandler):
             state = JOBS.get(path.split("/")[-1])
             if state is None:
                 return self.reply(404, {"error": "Job not found"})
-            return self.reply(200, {k: v for k, v in state.items() if k != "cancelEvent"})
+            try:
+                after = max(0, int(parse_qs(urlparse(self.path).query).get("after", ["0"])[0]))
+            except ValueError:
+                return self.reply(400, {"error": "Invalid event cursor"})
+            return self.reply(200, job_snapshot(state, after))
         self.reply(404, {"error": "Not found"})
 
     def do_POST(self):
@@ -409,10 +444,12 @@ class Handler(BaseHTTPRequestHandler):
             job_id = uuid.uuid4().hex
             state = {"id": job_id, "state": "queued", "progress": 0, "message": "Queued",
                      "outputPath": None, "usedVideoIds": [], "usedSegmentIds": [], "error": None,
-                     "cancelEvent": threading.Event()}
+                     "cancelEvent": threading.Event(), "eventLock": threading.Lock(),
+                     "eventSequence": 0, "events": []}
             JOBS[job_id] = state
+            log_job_event(state, "Queued PMV render")
             threading.Thread(target=do_job, args=(job_id, payload), daemon=True).start()
-            self.reply(202, {k: v for k, v in state.items() if k != "cancelEvent"})
+            self.reply(202, job_snapshot(state))
         except Exception as exc:
             self.reply(400, {"error": str(exc)})
 

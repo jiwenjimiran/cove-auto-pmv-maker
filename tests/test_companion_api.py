@@ -16,6 +16,23 @@ import server
 
 
 class CompanionApiTests(unittest.TestCase):
+    def test_job_diagnostics_have_ordered_cursor_and_bounded_history(self):
+        state = {"id": "job", "state": "running", "progress": 33, "message": "Matching faces",
+                 "cancelEvent": threading.Event(), "eventLock": threading.Lock(),
+                 "eventSequence": 0, "events": []}
+        server.log_job_event(state, "Scanning video 42")
+        server.log_job_event(state, "Selected slice", "info")
+        first = server.job_snapshot(state, 0)
+        self.assertEqual([1, 2], [event["sequence"] for event in first["events"]])
+        self.assertNotIn("cancelEvent", first)
+        self.assertEqual([], server.job_snapshot(state, 2)["events"])
+        for number in range(4001):
+            server.log_job_event(state, f"event {number}")
+        self.assertEqual(4000, len(state["events"]))
+        expired = server.job_snapshot(state, 0)
+        self.assertIn("expired", expired["events"][0]["message"])
+        self.assertLessEqual(len(expired["events"]), 250)
+
     def test_face_reference_upload_is_authenticated_and_cleaned(self):
         server.TOKEN = "a" * 32
         listener = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)

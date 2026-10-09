@@ -51,11 +51,16 @@ class FaceAnalyzer:
                 vectors = np.vstack([feature.reshape(-1) for features in self.references.values() for feature in features])
                 self.reference_vectors = vectors / np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-8)
 
-    def analyze_match(self, path, start, duration, pane_aspect, keep_centered, cancel=None):
+    def analyze_match(self, path, start, duration, pane_aspect, keep_centered, cancel=None, rejection=None):
         """Follow a selected identity through brief occlusion, without zooming."""
+        def reject(reason):
+            if rejection:
+                rejection(reason)
+            return None
+
         if self.recognizer is None:
             track = self.analyze(path, start, duration, pane_aspect, keep_centered, cancel)
-            return (track, None) if track is not None else None
+            return (track, None, None) if track is not None else reject("no continuous detectable face")
         cv2 = self.cv2
         capture = cv2.VideoCapture(str(path))
         if not capture.isOpened():
@@ -73,7 +78,7 @@ class FaceAnalyzer:
                 capture.set(cv2.CAP_PROP_POS_MSEC, (start + offset) * 1000)
                 ok, frame = capture.read()
                 if not ok:
-                    return None
+                    return reject("source frame unavailable")
                 height, width = frame.shape[:2]
                 scale = min(1.0, 720 / max(width, height))
                 if scale < 1:
@@ -100,36 +105,39 @@ class FaceAnalyzer:
                                            face_width / width, crop_width))
                 if candidates:
                     score, performer_id, center, face_fraction, crop_width = max(candidates)
-                    observations.append((offset, center, face_fraction, crop_width, performer_id))
+                    observations.append((offset, center, face_fraction, crop_width, performer_id, score))
                     votes[performer_id] = votes.get(performer_id, 0) + 1
                 if (not observations and offset > max(0.5, duration / count * 3)) or (
                         len(observations) + count - index - 1 < max(2, math.ceil(count * 0.5))):
-                    return None
+                    return reject("selected performer missing from sampled frames")
         finally:
             capture.release()
         if len(observations) < max(2, math.ceil(count * 0.5)):
-            return None
+            return reject("too few matching face samples")
         performer_id = max(votes, key=votes.get)
         observations = [row for row in observations if row[4] == performer_id]
         if len(observations) < max(2, math.ceil(count * 0.5)):
-            return None
+            return reject("matching samples split across performers")
         allowed_gap = max(0.5, duration / count * 3)
         if (observations[0][0] > allowed_gap or duration - observations[-1][0] > allowed_gap
                 or any(right[0] - left[0] > allowed_gap for left, right in zip(observations, observations[1:]))):
-            return None
+            return reject("matching face absent too long")
+        # This is the mean SFace cosine similarity of accepted observations,
+        # not a calibrated probability that the identity is correct.
+        similarity = sum(row[5] for row in observations) / len(observations)
         if not keep_centered:
             crop_width = observations[0][3]
             center = clamp(sum(row[1] for row in observations) / len(observations), crop_width / 2, 1 - crop_width / 2)
             if any(abs(row[1] - center) + row[2] / 2 > crop_width / 2 for row in observations):
-                return None
-            return ((0.0, center),), performer_id
+                return reject("face moved outside fixed crop")
+            return ((0.0, center),), performer_id, similarity
         centers = []
         current = observations[0][1]
-        for offset, face_x, _face_width, crop_width, _id in observations:
+        for offset, face_x, _face_width, crop_width, _id, _score in observations:
             current = clamp(0.35 * current + 0.65 * face_x, crop_width / 2, 1 - crop_width / 2)
             if not centers or abs(current - centers[-1][1]) >= 0.025:
                 centers.append((offset, float(current)))
-        return tuple(centers), performer_id
+        return tuple(centers), performer_id, similarity
 
     def analyze(self, path, start, duration, pane_aspect, keep_centered, cancel=None):
         """Return (offset, horizontal center) samples, or None when a face is absent.

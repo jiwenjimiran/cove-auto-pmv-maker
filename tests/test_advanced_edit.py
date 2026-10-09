@@ -120,6 +120,26 @@ class AdvancedEditTests(unittest.TestCase):
         self.assertEqual({0}, {c.pane for c in clips if c.record_start == 2})
         self.assertEqual({0, 1, 2}, {c.pane for c in clips if c.record_start == 4})
 
+    def test_face_match_logs_performer_range_and_similarity(self):
+        beats = BeatGrid([float(i) for i in range(5)], bars=(0,), phrases=(), meter=4)
+        options = {"layout": "three-pane", "selectionMode": "face", "matchSelectedPerformers": True,
+                   "maxClipSeconds": 5, "minClipSeconds": 1, "sampledClipsProgress": True,
+                   "rotatedClipLengthSeconds": 10}
+        messages = []
+        with patch("source_picker.scene_ranges", side_effect=lambda path, start, duration, cancel: [(start, start + duration)]), \
+                patch("face_analysis.FaceAnalyzer") as analyzer:
+            analyzer.return_value.references = {42: [object()]}
+            analyzer.return_value.analyze_match.return_value = (((0.0, 0.5),), 42, 0.68)
+            clips = edit_plan([source(1), source(2), source(3)], beats, options, "three-pane",
+                              references=[{"performerId": 42, "performerName": "Ada"}], log=messages.append)
+        self.assertEqual(3, len(clips))
+        selected = [message for message in messages if message.startswith("Selected slice")]
+        self.assertEqual(3, len(selected))
+        self.assertIn("with Ada at 68% match confidence", selected[0])
+        self.assertIn("source ", selected[0])
+        self.assertIn("song 0:00–0:04", selected[0])
+        self.assertTrue(any(message.startswith("Scanning video") for message in messages))
+
 
 if __name__ == "__main__":
     unittest.main()

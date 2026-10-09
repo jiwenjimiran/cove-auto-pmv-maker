@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Cove.PmvMaker;
 
@@ -31,7 +32,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.14";
+    public string Version => "0.1.15";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -470,9 +471,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     {
         await using var scope = _scopes!.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<PmvMakerExtension>>();
         var options = request.Options ?? settings.Defaults;
         var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct), options);
         if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
+        logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; layout {Layout}, selection {Selection}, audio {AudioKind}",
+            resolved.Videos.Count, resolved.Exclusions.Count, options.Layout, options.SelectionMode, request.Audio.Kind);
         var referenceIds = new List<string>();
         try
         {
@@ -484,6 +488,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             : new List<FaceReference>();
         if (faceMode && references.Count == 0)
             throw new InvalidOperationException("No reference face images were found for the selected performers. Choose performers with portraits or Cove face images, or disable performer matching.");
+        if (faceMode)
+            logger.LogInformation("[PMV] Uploaded {ReferenceCount} face reference images for {PerformerCount} performers; similarity threshold {Threshold:P0}",
+                references.Count, references.Select(row => row.PerformerId).Distinct().Count(), options.FaceSimilarityThreshold);
         var payload = new
         {
             sources = resolved.Videos.Select(v => new { v.Id, path = ToHost(v.Path, settings), v.Duration, v.Width, v.Height, v.Fps,
@@ -504,13 +511,30 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         using var response = await _http.SendAsync(post, ct);
         response.EnsureSuccessStatusCode();
         var submitted = await response.Content.ReadFromJsonAsync<CompanionJob>(Json, ct) ?? throw new InvalidOperationException("Companion gave no job ID.");
+        logger.LogInformation("[PMV {CompanionJobId}] Companion accepted render job", submitted.Id[..Math.Min(8, submitted.Id.Length)]);
+        long eventCursor = 0;
         try
         {
             while (true)
             {
                 await Task.Delay(TimeSpan.FromSeconds(1), ct);
-                var state = (await CompanionGetAsync(settings, "jobs/" + submitted.Id, ct)).Deserialize<CompanionJob>(Json)
-                    ?? throw new InvalidOperationException("Companion job state missing.");
+                CompanionJob state;
+                do
+                {
+                    state = (await CompanionGetAsync(settings, "jobs/" + submitted.Id + "?after=" + eventCursor, ct)).Deserialize<CompanionJob>(Json)
+                        ?? throw new InvalidOperationException("Companion job state missing.");
+                    foreach (var entry in state.Events ?? [])
+                    {
+                        if (entry.Sequence <= eventCursor) continue;
+                        eventCursor = entry.Sequence;
+                        if (entry.Level == "error")
+                            logger.LogError("[PMV {CompanionJobId}] {Diagnostic}", submitted.Id[..Math.Min(8, submitted.Id.Length)], entry.Message);
+                        else if (entry.Level == "warning")
+                            logger.LogWarning("[PMV {CompanionJobId}] {Diagnostic}", submitted.Id[..Math.Min(8, submitted.Id.Length)], entry.Message);
+                        else
+                            logger.LogInformation("[PMV {CompanionJobId}] {Diagnostic}", submitted.Id[..Math.Min(8, submitted.Id.Length)], entry.Message);
+                    }
+                } while (state.Events?.Count == 250);
                 progress.Report(Math.Clamp(state.Progress, 2, 98) / 100.0, state.Message);
                 if (state.State == "failed") throw new InvalidOperationException(state.Error ?? state.Message ?? "Resolve render failed.");
                 if (state.State == "cancelled") throw new OperationCanceledException("Resolve render cancelled.");
@@ -521,8 +545,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 if (options.ScanToCove)
                 {
                     progress.Report(0.98, "Importing PMV into Cove");
+                    logger.LogInformation("[PMV {CompanionJobId}] Importing finished MP4 into Cove", submitted.Id[..Math.Min(8, submitted.Id.Length)]);
                     var importedId = await scope.ServiceProvider.GetRequiredService<IScanService>().ImportDownloadedVideoAsync(covePath, null, ct);
                     await ApplyMetadataAsync(db, importedId, state, resolved, options, ct);
+                    logger.LogInformation("[PMV {CompanionJobId}] Cove import complete: video {VideoId}", submitted.Id[..Math.Min(8, submitted.Id.Length)], importedId);
                 }
                 progress.Report(1.0, "PMV saved: " + covePath);
                 return;
@@ -551,7 +577,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var ids = selectedIds?.Distinct().ToArray() ?? scope.Videos.SelectMany(v => v.PerformerIds).Distinct().ToArray();
         if (ids.Length == 0) return [];
         var performers = await db.Performers.AsNoTracking().Where(p => ids.Contains(p.Id))
-            .Select(p => new { p.Id, p.Gender, p.ImageBlobId, p.ImageOverrideBlobId }).ToArrayAsync(ct);
+            .Select(p => new { p.Id, p.Name, p.Gender, p.ImageBlobId, p.ImageOverrideBlobId }).ToArrayAsync(ct);
         if (selectedIds is null)
             performers = performers.Where(p => settings.DefaultFaceGender switch
             {
@@ -581,7 +607,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 var reply = await response.Content.ReadFromJsonAsync<JsonElement>(Json, ct);
                 var id = reply.GetProperty("referenceId").GetString()!;
                 uploaded.Add(id);
-                result.Add(new FaceReference(performer.Id, id));
+                result.Add(new FaceReference(performer.Id, id, performer.Name));
             }
         }
         return result;

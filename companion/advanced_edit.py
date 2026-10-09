@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import random
+import time
+from collections import Counter
 from dataclasses import replace
 
 from engine import Clip, choose_format
 from source_picker import SourceCursor
 
 
-def edit_plan(sources, beats, options, layout, cancel=None, progress=None, references=None):
+def clock_time(seconds):
+    minutes, seconds = divmod(int(round(seconds)), 60)
+    return f"{minutes}:{seconds:02d}"
+
+
+def edit_plan(sources, beats, options, layout, cancel=None, progress=None, references=None, log=None):
     if layout == "three-pane" and options.get("useVerticalVideosOnly"):
         sources = [s for s in sources if int(s["height"]) > int(s["width"])]
     if not sources:
@@ -72,6 +79,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                                threshold=float(options.get("faceSimilarityThreshold", 0.45)))
         if options.get("matchSelectedPerformers", True) and not matcher.references:
             raise ValueError("No usable reference face for selected performers. Choose performers with portrait or Cove face images, or disable performer matching.")
+    reference_names = {int(row["performerId"]): row.get("performerName") or f"performer #{row['performerId']}"
+                       for row in references or []}
     pane_aspect = None
     if panes == 3:
         width, height, _ = choose_format(sources, layout, options)
@@ -121,17 +130,40 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                 if len(eligible) > 1 and (len(eligible) >= panes or pair_mode) and any(
                         state and state["source"]["id"] == sid for state in states):
                     continue
+                rejection_counts = Counter()
+
                 def accept(start, span):
                     if matcher is None:
-                        return ((), None)
+                        return ((), None, None)
                     return matcher.analyze_match(source["path"], start, span, pane_aspect,
-                                                 bool(options.get("keepFaceCentered", True)), cancel)
+                                                 bool(options.get("keepFaceCentered", True)), cancel,
+                                                 (lambda reason: rejection_counts.update((reason,))) if log else None)
+                started = time.monotonic()
+                window_count = 0
+                last_window_log = 0.0
+
+                def on_window(attempt, window_start, window_length, source_range):
+                    nonlocal window_count, last_window_log
+                    window_count += 1
+                    now = time.monotonic()
+                    if log and (window_count == 1 or now - last_window_log >= 10):
+                        origin = f"timed segment {source_range.segment_id}" if source_range.segment_id else f"band {source_range.band + 1}"
+                        log(f"Scanning video {sid}, pane {pane + 1}, song {clock_time(left)}: "
+                            f"source {clock_time(window_start)}–{clock_time(window_start + window_length)} "
+                            f"({origin}, window {attempt}); checking scenes and faces")
+                        last_window_log = now
                 if progress and matcher:
                     progress(25 + 14 * index / max(1, len(times) - 1),
                              f"Matching faces: video {sid} ({offset + 1}/{len(eligible)} candidates), pane {pane + 1}, song {left:.1f}s")
-                found = cursors[sid].next(required, accept)
+                found = cursors[sid].next(required, accept, on_window)
                 if not found:
                     failed_length[sid] = min(required, failed_length.get(sid, required))
+                    if log:
+                        reasons = ", ".join(f"{reason} ({count})" for reason, count in rejection_counts.most_common(3))
+                        log(f"Rejected video {sid}, pane {pane + 1}, song {clock_time(left)}: "
+                            f"no usable {('matching face' if matcher else 'scene')} for {required:.1f}s "
+                            f"after {window_count} windows in {time.monotonic() - started:.1f}s"
+                            + (f"; face checks: {reasons}" if reasons else ""))
                     if progress:
                         progress(25 + 14 * index / max(1, len(times) - 1),
                                  f"Skipping video {sid}: no usable {'matching face' if matcher else 'scene'} for a {required:.1f}s clip")
@@ -140,16 +172,24 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                     previous = previous_states[pane]
                     if (previous and previous["source"]["id"] == sid
                             and abs(start - (previous["start"] + left - previous["began"])) < 0.05):
-                        jumped = cursors[sid].next(required, accept)
+                        jumped = cursors[sid].next(required, accept, on_window)
                         if jumped:
                             start, segment_id, evidence = jumped
-                    track, performer_id = evidence
+                    track, performer_id, similarity = evidence
                     crop = track[0][1] if track else 0.5
                     if selection == "random":
                         fraction = min(1.0, pane_aspect * int(source["height"]) / int(source["width"]))
                         crop = rng.uniform(fraction / 2, 1 - fraction / 2)
                     chosen = dict(source=source, start=start, segment=segment_id, crop=crop,
                                   track=track, performer=performer_id, began=left)
+                    if log:
+                        detail = (f" with {reference_names.get(performer_id, f'performer #{performer_id}')} "
+                                  f"at {similarity:.0%} match confidence (SFace cosine similarity, not a probability)"
+                                  if performer_id is not None and similarity is not None else
+                                  " with a detected face" if matcher else "")
+                        log(f"Selected slice from video {sid}: source {clock_time(start)}–{clock_time(start + required)}"
+                            f" → song {clock_time(left)}–{clock_time(left + required)}, pane {pane + 1}{detail}; "
+                            f"{window_count} windows, {time.monotonic() - started:.1f}s")
                     seen.add(sid)
                     serial += offset + 1
                     break
