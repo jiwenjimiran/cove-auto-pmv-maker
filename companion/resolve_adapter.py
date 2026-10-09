@@ -48,6 +48,43 @@ def check(ok, label):
     return ok
 
 
+def set_item_property(item, key, value, label, clip, track_index, project_fill=False):
+    """Resolve may expose an appended timeline item before its filters accept edits."""
+    def set_single(property_key, property_value):
+        modern = getattr(item, "SetProperties", None)
+        return modern({property_key: property_value}) if callable(modern) else item.SetProperty(property_key, property_value)
+
+    def get_all():
+        modern = getattr(item, "GetProperties", None)
+        return (modern() if callable(modern) else item.GetProperty()) or {}
+
+    last_result = None
+    for attempt in range(4):
+        last_result = set_single(key, value)
+        if last_result:
+            return
+        properties = get_all()
+        current = properties.get(key)
+        if current == value or (isinstance(current, (int, float)) and isinstance(value, (int, float))
+                                and abs(current - value) < 0.001):
+            return
+        if key == "Scaling" and properties.get("RetimeAndScalingEnabled") is False:
+            set_single("RetimeAndScalingEnabled", True)
+        if attempt < 3:
+            time.sleep((0.1, 0.25, 0.5)[attempt])
+    properties = get_all()
+    if (key == "Scaling" and project_fill and properties.get("Scaling") == 0
+            and properties.get("RetimeAndScalingEnabled") is not False):
+        # SCALE_USE_PROJECT inherits timelineInputResMismatchBehavior=scaleToCrop.
+        # Some media items reject a per-item override even though project scaling works.
+        return
+    raise RuntimeError(
+        f"Resolve rejected {label} for video {clip.video_id} ({Path(clip.path).name}), "
+        f"track {track_index}, timeline {clip.record_start:.2f}s, source {clip.source_start:.2f}s: "
+        f"{key}={value!r}; current={properties.get(key)!r}, "
+        f"RetimeAndScalingEnabled={properties.get('RetimeAndScalingEnabled')!r}, result={last_result!r}")
+
+
 def media_key(path):
     # Resolve may expand Windows 8.3 names while Python keeps the short path.
     return os.path.normcase(os.path.realpath(path))
@@ -87,6 +124,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         check(project.SetSettings({"timelineResolutionWidth": str(width)}), "timeline width")
         check(project.SetSettings({"timelineResolutionHeight": str(height)}), "timeline height")
         check(project.SetSettings({"timelineFrameRate": str(fps)}), "timeline fps")
+        check(project.SetSettings({"timelineInputResMismatchBehavior": "scaleToCrop"}), "project fill scaling")
         check(manager.SaveProject(), "SaveProject before media import")
         media_pool = project.GetMediaPool()
         folder = media_pool.GetCurrentFolder()
@@ -171,6 +209,8 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             if not result:
                 raise RuntimeError(f"Resolve could not append video {clip.video_id} at {at} on track {track_index}; source frames {start}-{start + count - 1}; video tracks {timeline.GetTrackCount('video')}; timeline frames {timeline.GetStartFrame()}-{timeline.GetEndFrame()}; track items {len(timeline.GetItemListInTrack('video', track_index) or [])}")
             item = result[0]
+            def set_property(key, value, label):
+                set_item_property(item, key, value, label, clip, track_index, project_fill=True)
             base_zoom = 1.0
             if pane_count == 3:
                 pane_width = width / 3
@@ -182,28 +222,28 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 side_crop = max(0.0, (visible_width - pane_width) / 2)
                 desired_center = center_at(clip, offset + length / 2)
                 shift = max(-side_crop, min(side_crop, (desired_center - 0.5) * visible_width))
-                check(item.SetProperty("Scaling", resolve.SCALE_FILL), "pane scaling")
-                check(item.SetProperty("ZoomX", base_zoom), "pane zoom X")
-                check(item.SetProperty("ZoomY", base_zoom), "pane zoom Y")
-                check(item.SetProperty("Pan", (clip.pane - 1) * pane_width - shift), "pane position")
-                check(item.SetProperty("CropLeft", side_crop + shift), "left pane crop")
-                check(item.SetProperty("CropRight", side_crop - shift), "right pane crop")
+                set_property("Scaling", resolve.SCALE_FILL, "pane scaling")
+                set_property("ZoomX", base_zoom, "pane zoom X")
+                set_property("ZoomY", base_zoom, "pane zoom Y")
+                set_property("Pan", (clip.pane - 1) * pane_width - shift, "pane position")
+                set_property("CropLeft", side_crop + shift, "left pane crop")
+                set_property("CropRight", side_crop - shift, "right pane crop")
             else:
-                check(item.SetProperty("Scaling", resolve.SCALE_FILL), "full-screen scaling")
+                set_property("Scaling", resolve.SCALE_FILL, "full-screen scaling")
             if style == "high-energy" and clip.accent:
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.1 * motion_intensity)
-                check(item.SetProperty("ZoomX", zoom), "accent zoom X")
-                check(item.SetProperty("ZoomY", zoom), "accent zoom Y")
+                set_property("ZoomX", zoom, "accent zoom X")
+                set_property("ZoomY", zoom, "accent zoom Y")
             elif style == "cinematic":
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.03 * motion_intensity)
-                check(item.SetProperty("ZoomX", zoom), "cinematic zoom X")
-                check(item.SetProperty("ZoomY", zoom), "cinematic zoom Y")
+                set_property("ZoomX", zoom, "cinematic zoom X")
+                set_property("ZoomY", zoom, "cinematic zoom Y")
             if opacity is not None:
-                check(item.SetProperty("Opacity", opacity), "effect opacity")
+                set_property("Opacity", opacity, "effect opacity")
             if composite is not None:
-                check(item.SetProperty("CompositeMode", composite), "effect composite mode")
+                set_property("CompositeMode", composite, "effect composite mode")
             grade(item, treatment, luma.get(clip.path, 112.0))
             return item
 
@@ -258,7 +298,8 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                         side_crop = max(0.0, (visible_width - width / 3) / 2)
                         shift = max(-side_crop, min(side_crop, (center_at(clip, 0) - 0.5) * visible_width))
                         base_pan = (pane - 1) * width / 3 - shift
-                    check(effect.SetProperty("Pan", base_pan + 20 * glitch_intensity), "glitch offset")
+                    set_item_property(effect, "Pan", base_pan + 20 * glitch_intensity, "glitch offset", clip,
+                                      pane_count * 3 + pane + 1)
         audio_item = items[media_key(audio_path)]
         result = media_pool.AppendToTimeline([{"mediaPoolItem": audio_item, "startFrame": 0,
                                                "endFrame": max(1, round(max(c.record_start + c.duration for c in clips) * fps)) - 1,

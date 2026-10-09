@@ -27,6 +27,7 @@ This is a preview release. The Resolve render and compatibility checks have been
 - Default render is H.264 MP4 with a song-led cut grid, three side-by-side portrait panes in a landscape frame or full screen, and a final audio limiter. A common 4:3 source ratio produces 4:3 output. Three-pane sources can be limited to portrait videos or cropped from landscape footage using random, center, or detected-face slices. Face slice rejects sampled ranges without a face and can follow face movement. Resolve timeline overlays implement stepped dissolves, flashes, and glitches; optional color adjustments use CDL.
 - Color matching defaults to None. Match brightness samples the first two seconds of each used video; Warm and Cool apply subtle channel shifts without that sampling step.
 - Resolve's scripting API must be tested with a short render on the target Studio installation before relying on crop, scaling, grading, and compositing behavior. Use **Run Resolve compatibility check** in Cove settings to render all three styles, both layouts, and all source-audio modes. It checks H.264/AAC output and samples pane colors.
+- The Resolve adapter uses the current timeline-property API where available, retries a newly appended clip while Resolve initializes it, and sets project-level fill scaling so clips can inherit it if a per-clip scaling override is rejected. Any remaining property rejection identifies the video, track, timeline position, requested value, and Resolve's current value.
 
 ## Checks
 
