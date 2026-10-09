@@ -168,3 +168,25 @@ index bb6b6511..739516a2 100644
        onNavigate={onNavigate}
        vrListSource={{
          label: pageLabel(),
+diff --git a/ui/src/pages/SegmentsPage.tsx b/ui/src/pages/SegmentsPage.tsx
+index 1d4b3aa2..2f5f3b0d 100644
+--- a/ui/src/pages/SegmentsPage.tsx
++++ b/ui/src/pages/SegmentsPage.tsx
+@@ -6,6 +6,7 @@ import type { FindFilter, SegmentDisplayProfile } from "../api/types";
+ import { useAuth } from "../auth/AuthContext";
+ import { canDeleteEntity, canReadEntity, canWriteEntity } from "../auth/visibility";
+ import { AddToGroupDialog, type AddToGroupEntry } from "../components/AddToGroupDialog";
++import { ExtensionSelectionActions } from "../components/ExtensionSelectionActions";
+ import { ConfirmDialog } from "../components/ConfirmDialog";
+ import { MediaAggregateMetadata } from "../components/MediaAggregateMetadata";
+ import { ListPage, type DisplayMode } from "../components/ListPage";
+@@ -1074,6 +1075,9 @@ export function SegmentsPage({ onNavigate }: Props) {
+         onInvertSelection={invertSelection}
+         selectionActions={
+           <>
++            {isRawView && canReadVideos && selectedIds.size > 0 ? (
++              <ExtensionSelectionActions entityType="segment" selectedIds={new Set([...selectedIds].map(Number))} />
++            ) : null}
+             {isRawView && canDeleteSegments && selectedRawSegments.length > 0 ? (
+               <button
+                 type="button"

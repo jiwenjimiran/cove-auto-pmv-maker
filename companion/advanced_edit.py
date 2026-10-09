@@ -71,7 +71,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     eligible = [s for s in sources if cursors[int(s["id"])].ranges]
     if not eligible:
         raise ValueError("Timestamp bounds leave no usable source ranges")
-    selection = options.get("selectionMode", "face") if panes == 3 and not options.get("useVerticalVideosOnly") else "center"
+    selection = (options.get("fullSelectionMode", "scene") if panes == 1 else
+                 options.get("selectionMode", "face") if not options.get("useVerticalVideosOnly") else "center")
     matcher = None
     if selection == "face":
         from face_analysis import FaceAnalyzer
@@ -85,6 +86,9 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     if panes == 3:
         width, height, _ = choose_format(sources, layout, options)
         pane_aspect = width / (3 * height)
+    elif selection == "face":
+        width, height, _ = choose_format(sources, layout, options)
+        pane_aspect = width / height
     states = [None] * panes
     result = []
     serial = 0

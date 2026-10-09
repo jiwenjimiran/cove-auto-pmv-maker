@@ -14,7 +14,7 @@ from engine import option_range, probe, run
 
 MODULES = Path(os.environ.get("RESOLVE_SCRIPT_API", r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting")) / "Modules"
 VALIDATION = Path(__file__).with_name("validated-version.json")
-VALIDATION_SCHEMA = 3
+VALIDATION_SCHEMA = 4
 sys.path.insert(0, str(MODULES))
 
 
@@ -126,6 +126,56 @@ def grade(item, treatment, luma):
                        "Offset": "0 0 0", "Power": "1 1 1", "Saturation": "1"}), "color treatment")
 
 
+def animate_expansion(item, clip, role, width, height, fps):
+    """Animate original-resolution media from its cell to full frame in Fusion."""
+    frames = max(4, round(clip.expansion_duration * fps))
+    comp = check(item.AddFusionComp(), "AddFusionComp for cell expansion")
+    tools = list(comp.GetToolList().values())
+    media_in = next((tool for tool in tools if tool.GetAttrs().get("TOOLS_RegID") == "MediaIn"), None)
+    media_out = next((tool for tool in tools if tool.GetAttrs().get("TOOLS_RegID") == "MediaOut"), None)
+    if media_in is None or media_out is None:
+        raise RuntimeError("Resolve Fusion did not expose MediaIn/MediaOut for cell expansion")
+    transform = check(comp.AddTool("Transform"), "Fusion Transform for cell expansion")
+    transform.Input = media_in.Output
+    transform.Center = comp.Path()
+    # A corner tile shows the full landscape frame at half size. The portrait
+    # version instead reveals a moving full-height mask.
+    from_grid = clip.expansion_layout == "grid"
+    if from_grid:
+        col, row = clip.expansion_from % 2, clip.expansion_from // 2
+        transform.UseSizeAndAspect = 0
+        transform.XSize = comp.BezierSpline()
+        transform.YSize = comp.BezierSpline()
+        transform.XSize[0], transform.XSize[frames] = 0.5, 1.0
+        transform.YSize[0], transform.YSize[frames] = 0.5, 1.0
+        transform.Center[0] = {1: 0.25 + 0.5 * col, 2: 0.75 - 0.5 * row}
+        transform.Center[frames] = {1: 0.5, 2: 0.5}
+        media_out.Input = transform.Output
+        if abs(float(transform.XSize[0]) - 0.5) > 0.01 or abs(float(transform.XSize[frames]) - 1) > 0.01:
+            raise RuntimeError("Resolve did not retain grid expansion keyframes")
+    else:
+        pane_center = (clip.expansion_from + 0.5) / 3
+        start_center = max(0.0, min(1.0, pane_center - (clip.crop_center - 0.5)))
+        transform.Center[0] = {1: start_center, 2: 0.5}
+        transform.Center[frames] = {1: 0.5, 2: 0.5}
+        background = check(comp.AddTool("Background"), "Fusion transparent background")
+        background.TopLeftAlpha = 0.0
+        mask = check(comp.AddTool("RectangleMask"), "Fusion expansion mask")
+        mask.Width = comp.BezierSpline()
+        mask.Center = comp.Path()
+        mask.Width[0], mask.Width[frames] = 1 / 3, 1.0
+        mask.Center[0] = {1: pane_center, 2: 0.5}
+        mask.Center[frames] = {1: 0.5, 2: 0.5}
+        mask.Height = 1.0
+        merge = check(comp.AddTool("Merge"), "Fusion expansion merge")
+        merge.Background = background.Output
+        merge.Foreground = transform.Output
+        merge.EffectMask = mask.Output
+        media_out.Input = merge.Output
+        if abs(float(mask.Width[0]) - 1 / 3) > 0.01 or abs(float(mask.Width[frames]) - 1) > 0.01:
+            raise RuntimeError("Resolve did not retain portrait expansion keyframes")
+
+
 def render(clips, audio_path, output_path, width, height, fps, options, project_folder, cancel, progress,
            require_validation=True):
     resolve = connect(require_validation=require_validation)
@@ -179,9 +229,11 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         check(project.SetCurrentTimeline(timeline), "SetCurrentTimeline")
         check(timeline.SetStartTimecode("00:00:00:00"), "timeline start timecode")
         layout = options.get("layout", "three-pane")
-        pane_count = 3 if layout == "three-pane" else 1
+        pane_count = 4 if layout in ("grid", "grid-full") else 3 if layout in ("three-pane", "three-pane-full") else 1
+        hybrid = layout in ("three-pane-full", "grid-full")
+        main_tracks = pane_count + (1 if hybrid else 0)
         source_sizes = {}
-        if pane_count == 3:
+        if pane_count > 1:
             for path in {clip.path for clip in clips}:
                 video = next(stream for stream in probe(path)["streams"] if stream["codec_type"] == "video")
                 source_width, source_height = int(video["width"]), int(video["height"])
@@ -193,7 +245,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 source_sizes[path] = (source_width, source_height)
         # AppendToTimeline does not create a requested upper track on every
         # Resolve version. Reserve the tracks used by panes and accents first.
-        for _ in range(pane_count * 4 - timeline.GetTrackCount("video")):
+        for _ in range(main_tracks * 4 - timeline.GetTrackCount("video")):
             check(timeline.AddTrack("video"), "AddTrack video")
         for _ in range(1 - timeline.GetTrackCount("audio")):
             check(timeline.AddTrack("audio"), "AddTrack audio")
@@ -222,6 +274,12 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             position = min(clip.face_track, key=lambda point: abs(point[0] - offset))
             return position[1]
 
+        def clip_role(clip):
+            return clip.layout_role or ("grid" if layout == "grid" else "three-pane" if pane_count == 3 else "full-screen")
+
+        def main_track(clip):
+            return main_tracks if hybrid and clip_role(clip) == "full-screen" else clip.pane + 1
+
         def append_part(clip, offset, length, record_start, track_index, opacity=None, composite=None):
             if cancel.is_set():
                 raise InterruptedError("Timeline build cancelled")
@@ -244,12 +302,14 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             def set_property(key, value, label):
                 set_item_property(item, key, value, label, clip, track_index, project_fill=True)
             base_zoom = 1.0
-            if pane_count == 3:
-                pane_width = width / 3
+            role = clip_role(clip)
+            if role in ("three-pane", "grid"):
+                pane_width = width / (3 if role == "three-pane" else 2)
+                pane_height = height if role == "three-pane" else height / 2
                 source_width, source_height = source_sizes[clip.path]
                 fill_scale = max(width / source_width, height / source_height)
-                pane_scale = (height / source_height if options.get("selectionMode") == "face"
-                              else max(pane_width / source_width, height / source_height))
+                pane_scale = (pane_height / source_height if role == "three-pane" and options.get("selectionMode") == "face"
+                              else max(pane_width / source_width, pane_height / source_height))
                 base_zoom = pane_scale / fill_scale
                 visible_width = source_width * pane_scale
                 side_crop = max(0.0, (visible_width - pane_width) / 2)
@@ -260,14 +320,20 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 set_property("Scaling", resolve.SCALE_FILL, "pane scaling")
                 set_property("ZoomX", base_zoom, "pane zoom X")
                 set_property("ZoomY", base_zoom, "pane zoom Y")
-                set_property("Pan", (clip.pane - 1) * pane_width - shift, "pane position")
+                horizontal = (clip.pane - 1) * pane_width if role == "three-pane" else ((clip.pane % 2) - 0.5) * pane_width
+                set_property("Pan", horizontal - shift, "pane position")
+                if role == "grid":
+                    set_property("Tilt", (0.5 - clip.pane // 2) * pane_height, "grid row position")
+                    vertical_crop = max(0.0, (source_height * pane_scale - pane_height) / 2)
+                    set_property("CropTop", vertical_crop, "grid top crop")
+                    set_property("CropBottom", vertical_crop, "grid bottom crop")
                 set_property("CropLeft", side_crop + shift, "left pane crop")
                 set_property("CropRight", side_crop - shift, "right pane crop")
                 if clip.mirrored:
                     set_property("FlipX", True, "mirror repeated source")
             else:
                 set_property("Scaling", resolve.SCALE_FILL, "full-screen scaling")
-            face_slice = pane_count == 3 and options.get("selectionMode") == "face"
+            face_slice = role in ("three-pane", "grid") and options.get("selectionMode") == "face"
             if not face_slice and style == "high-energy" and clip.accent:
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.1 * motion_intensity)
@@ -283,22 +349,26 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             if composite is not None:
                 set_property("CompositeMode", composite, "effect composite mode")
             grade(item, treatment, luma.get(clip.path, 112.0))
+            if clip.expansion_from is not None and offset == 0:
+                animate_expansion(item, clip, role, width, height, fps)
             return item
 
         # Main video occupies separate tracks per pane. Dissolves use short incoming
         # slices on overlay tracks with increasing opacity over the outgoing clip.
         placed_clips = 0
-        for pane in range(pane_count):
-            pane_clips = sorted((clip for clip in clips if clip.pane == pane), key=lambda clip: clip.record_start)
+        for track in range(1, main_tracks + 1):
+            pane_clips = sorted((clip for clip in clips if main_track(clip) == track), key=lambda clip: clip.record_start)
             for position, clip in enumerate(pane_clips):
                 placed_clips += 1
                 progress(53.5 + 1.4 * placed_clips / max(1, len(clips)),
-                         f"Assembling clip {placed_clips}/{len(clips)}: video {clip.video_id}, pane {pane + 1}/{pane_count}, timeline {clip.record_start:.1f}s")
+                         f"Assembling clip {placed_clips}/{len(clips)}: video {clip.video_id}, {clip_role(clip)} cell {clip.pane + 1}, timeline {clip.record_start:.1f}s")
                 fade = 0.0
                 transition_intensity = intensity("transitionIntensity", clip, 0.25)
                 flash_intensity = intensity("flashIntensity", clip, 0)
                 glitch_intensity = intensity("glitchIntensity", clip, 0)
-                if position and transition_on and transition_intensity > 0:
+                if (position and not clip.underlay and not pane_clips[position - 1].underlay
+                        and abs(pane_clips[position - 1].record_start + pane_clips[position - 1].duration - clip.record_start) < 0.05
+                        and transition_on and transition_intensity > 0):
                     previous = pane_clips[position - 1]
                     fade = min(0.5 * transition_intensity, clip.duration * 0.25, previous.duration * 0.25)
                     fade_frames = max(1, round(fade * fps))
@@ -306,38 +376,40 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                     if fade_frames >= 4:
                         first_frames = (fade_frames + 1) // 2
                         append_part(clip, 0, first_frames / fps, clip.record_start - fade,
-                                    pane_count + pane + 1, opacity=25)
+                                    main_tracks + track, opacity=25)
                         append_part(clip, first_frames / fps, (fade_frames - first_frames) / fps,
                                     clip.record_start - fade + first_frames / fps,
-                                    pane_count + pane + 1, opacity=75)
+                                    main_tracks + track, opacity=75)
                     else:
                         append_part(clip, 0, fade, clip.record_start - fade,
-                                    pane_count + pane + 1, opacity=50)
-                if clip.face_track and len(clip.face_track) > 1:
+                                    main_tracks + track, opacity=50)
+                if clip.face_track and len(clip.face_track) > 1 and clip.expansion_from is None:
                     boundaries = [0.0] + [(left[0] + right[0]) / 2 for left, right in zip(clip.face_track, clip.face_track[1:])] + [clip.duration]
                     for start, end in zip(boundaries, boundaries[1:]):
                         start = max(start, fade)
                         if end > start:
-                            append_part(clip, start, end - start, clip.record_start + start - fade, pane + 1)
+                            append_part(clip, start, end - start, clip.record_start + start - fade, track)
                 else:
-                    append_part(clip, fade, clip.duration - fade, clip.record_start, pane + 1)
-                if clip.accent and flash_intensity > 0:
+                    append_part(clip, fade, clip.duration - fade, clip.record_start, track)
+                if not clip.underlay and clip.accent and flash_intensity > 0:
                     append_part(clip, 0, min(0.12, clip.duration), clip.record_start,
-                                pane_count * 2 + pane + 1, opacity=50 * flash_intensity,
+                                main_tracks * 2 + track, opacity=50 * flash_intensity,
                                 composite=resolve.COMPOSITE_ADD)
-                if clip.accent and glitch_intensity > 0:
+                if not clip.underlay and clip.accent and glitch_intensity > 0:
                     effect = append_part(clip, min(0.08, clip.duration / 4), min(0.12, clip.duration / 4),
-                                         clip.record_start, pane_count * 3 + pane + 1,
+                                         clip.record_start, main_tracks * 3 + track,
                                          opacity=35 * glitch_intensity, composite=resolve.COMPOSITE_DIFF)
                     base_pan = 0
-                    if pane_count == 3:
+                    if clip_role(clip) == "three-pane":
                         source_width, source_height = source_sizes[clip.path]
                         visible_width = source_width * max((width / 3) / source_width, height / source_height)
                         side_crop = max(0.0, (visible_width - width / 3) / 2)
                         shift = max(-side_crop, min(side_crop, (center_at(clip, 0) - 0.5) * visible_width))
-                        base_pan = (pane - 1) * width / 3 - shift
+                        base_pan = (clip.pane - 1) * width / 3 - shift
+                    elif clip_role(clip) == "grid":
+                        base_pan = ((clip.pane % 2) - 0.5) * width / 2
                     set_item_property(effect, "Pan", base_pan + 20 * glitch_intensity, "glitch offset", clip,
-                                      pane_count * 3 + pane + 1)
+                                      main_tracks * 3 + track)
         audio_item = items[media_key(audio_path)]
         result = media_pool.AppendToTimeline([{"mediaPoolItem": audio_item, "startFrame": 0,
                                                "endFrame": max(1, round(max(c.record_start + c.duration for c in clips) * fps)) - 1,

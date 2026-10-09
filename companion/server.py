@@ -282,15 +282,17 @@ def do_job(job_id, payload):
                 beats = beat_grid(song, trim_start, trim_end, cancelled, options.get("beatsPerBar", "auto"))
                 update(25, f"Finding usable footage in {len(sources)} eligible videos")
                 from advanced_edit import edit_plan as advanced_plan
-                clips = advanced_plan(sources, beats, options, options["layout"], cancelled, update,
-                                      face_references(payload.get("references") or []),
-                                      lambda message: log_job_event(state, message))
+                from layout_edit import edit_plan as layout_plan
+                planner = advanced_plan if options["layout"] == "full-screen" else layout_plan
+                clips = planner(sources, beats, options, options["layout"], cancelled, update,
+                                face_references(payload.get("references") or []),
+                                lambda message: log_job_event(state, message))
                 if cancelled.is_set():
                     raise InterruptedError("Cancelled")
                 used_video_ids = sorted({c.video_id for c in clips})
                 used_segment_ids = sorted({int(segment["id"]) for clip in clips for source in sources
                                            if int(source["id"]) == clip.video_id
-                                           for segment in source.get("segments") or []
+                                           for segment in source.get("allSegments") or source.get("segments") or []
                                            if clip.source_start < float(segment["end"])
                                            and clip.source_start + clip.duration > float(segment["start"])})
                 matched_performer_ids = sorted({c.matched_performer_id for c in clips if c.matched_performer_id is not None})

@@ -84,7 +84,7 @@ def main(automated=False, progress=None, limit=None):
                         raise RuntimeError(f"Audio peak measurement failed for {name}")
                     checks.append({"name": name, "output": str(output), "duration": media["format"]["duration"]})
                     if progress:
-                        progress(len(checks), 19, name)
+                        progress(len(checks), 22, name)
                     if limit is not None and len(checks) >= limit:
                         return checks
         # Verify the new full-height crop and FlipX technique against an
@@ -111,7 +111,46 @@ def main(automated=False, progress=None, limit=None):
             raise RuntimeError("Resolve did not visually mirror the repeated outside pane")
         checks.append({"name": "full-height-mirror", "output": str(mirror_output), "duration": probe(mirror_output)["format"]["duration"]})
         if progress:
-            progress(len(checks), 19, "full-height-mirror")
+            progress(len(checks), 22, "full-height-mirror")
+        # The grid geometry and both Fusion expansion paths are required by
+        # schema 4. Check rendered pixels, not merely accepted API properties.
+        landscape = [sources[3], sources[4], sources[5],
+                     {"id": 90, "path": str(pair)}]
+        for role, expansion in (("grid", False), ("grid", True), ("three-pane", True)):
+            name = role + ("-expansion" if expansion else "-tiles")
+            members = landscape if role == "grid" else sources[:3]
+            fixtures = [Clip(int(source["id"]), source["path"], 0, 2, 0, index, None, False, .5,
+                             layout_role=role) for index, source in enumerate(members)]
+            if expansion:
+                fixtures.extend(Clip(int(source["id"]), source["path"], 2, .5, 2, index, None, False, .5,
+                                     layout_role=role, underlay=True)
+                                for index, source in enumerate(members))
+                fixtures.append(Clip(int(members[0]["id"]), members[0]["path"], 2, 2, 2, 0, None, False, .5,
+                                     layout_role="full-screen", expansion_from=0,
+                                     expansion_duration=.5, expansion_layout=role))
+            output = root / (name + ".mp4")
+            render(fixtures, str(song), str(output), 640, 360, 30,
+                   {"layout": role + "-full" if expansion else role, "selectionMode": "center",
+                    "style": "rhythmic-polish", "colorTreatment": "natural", "transitionFamilies": ["cut"]},
+                   "", threading.Event(), lambda percent, message: None, require_validation=False)
+            def sample(seconds, x, y):
+                raw, _ = run(["ffmpeg", "-v", "error", "-ss", str(seconds), "-i", str(output),
+                              "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+                at = (y * 640 + x) * 3
+                return tuple(raw[at:at + 3])
+            centers = [(160, 90), (480, 90), (160, 270), (480, 270)] if role == "grid" else [
+                (105, 180), (320, 180), (535, 180)]
+            first = [sample(1, x, y) for x, y in centers]
+            if any(max(pixel) < 65 for pixel in first) or len(set(first)) != len(centers):
+                raise RuntimeError(f"{name} did not render distinct visible cells: {first}")
+            if expansion:
+                last = [sample(3, x, y) for x, y in centers]
+                if any(max(abs(a - b) for a, b in zip(pixel, last[0])) > 8 for pixel in last[1:]):
+                    raise RuntimeError(f"{name} did not expand its cell to the full frame: {last}")
+            checks.append({"name": name, "output": str(output),
+                           "duration": probe(output)["format"]["duration"]})
+            if progress:
+                progress(len(checks), 22, name)
         print(json.dumps({"studio": resolve.GetProductName(), "version": resolve.GetVersionString(), "renders": checks}, indent=2))
         print("Inspect beat cuts, transition smoothness, flash/glitch accents, crop edges, and audio peaks before cleanup.")
         if automated or input("Type VALIDATED to enable this Resolve version: ").strip() == "VALIDATED":

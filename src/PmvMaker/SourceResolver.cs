@@ -15,7 +15,7 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public async Task<ScopeResult> ResolveAsync(SourceScope scope, CovePrincipal? principal, CancellationToken ct)
+    public async Task<ScopeResult> ResolveAsync(SourceScope scope, CovePrincipal? principal, CancellationToken ct, PmvOptions? options = null)
     {
         var ids = scope.EntityIds.Where(id => id > 0).Distinct().ToArray();
         if (ids.Length == 0) throw new ArgumentException("Select at least one source.");
@@ -26,11 +26,19 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
             "performer" => (EntityKinds.Performer, "performers.read"),
             "studio" => (EntityKinds.Studio, "studios.read"),
             "tag" => (EntityKinds.Tag, "tags.read"),
+            "segment" => (EntityKinds.Segment, "segments.read"),
             _ => throw new ArgumentException("Unsupported source type: " + scope.EntityType)
         };
         var selectedDecisions = await authorization.AuthorizeManyAsync(principal, permission,
             ids.Select(id => new EntityRef(entityKind, id.ToString())).ToArray(), ct);
         if (selectedDecisions.Any(d => !d.Allowed)) throw new UnauthorizedAccessException("Source selection is not accessible.");
+        var selectedTagIds = options?.SegmentTagIds?.Where(id => id > 0).Distinct().ToArray() ?? [];
+        if (selectedTagIds.Length > 0)
+        {
+            var tagDecisions = await authorization.AuthorizeManyAsync(principal, "tags.read",
+                selectedTagIds.Select(id => new EntityRef(EntityKinds.Tag, id.ToString())).ToArray(), ct);
+            if (tagDecisions.Any(d => !d.Allowed)) throw new UnauthorizedAccessException("Segment list contains a tag you cannot access.");
+        }
         var launchName = ids.Length == 1 && kind is "performer" or "studio" or "tag"
             ? kind switch
             {
@@ -61,6 +69,8 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
             "performer" => await db.Set<VideoPerformer>().Where(x => ids.Contains(x.PerformerId)).Select(x => x.VideoId).Distinct().ToArrayAsync(ct),
             "studio" => await StudioVideoIdsAsync(ids, scope.IncludeChildStudios, ct),
             "tag" => await db.Segments.Where(s => s.HostType == SegmentHostType.Video && s.TagId.HasValue && ids.Contains(s.TagId.Value))
+                .Select(s => s.HostId).Distinct().ToArrayAsync(ct),
+            "segment" => await db.Segments.Where(s => s.HostType == SegmentHostType.Video && ids.Contains(s.Id))
                 .Select(s => s.HostId).Distinct().ToArrayAsync(ct),
             _ => throw new ArgumentException("Unsupported source type: " + scope.EntityType)
         };
@@ -96,6 +106,11 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
         var exclusions = new List<string>();
         foreach (var video in rows)
         {
+            if (video.Title?.Contains("PMVMAKER", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                exclusions.Add($"Video {video.Id}: title contains PMVMAKER");
+                continue;
+            }
             var file = video.Files.OrderByDescending(f => f.Id == video.PrimaryFileId)
                 .ThenByDescending(f => f.Width * (long)f.Height).FirstOrDefault();
             if (file is null || string.IsNullOrWhiteSpace(file.Path) || file.Duration <= 0)
@@ -110,12 +125,26 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
             }
             var ranges = byVideo.GetValueOrDefault(video.Id, [])
                 .Where(s => !s.EndSec.HasValue || s.EndSec.Value > s.StartSec)
-                .Where(s => kind != "tag" || s.TagId.HasValue && ids.Contains(s.TagId.Value))
                 .Select(s => new SourceSegment(s.Id, Math.Max(0, s.StartSec), Math.Min(file.Duration, s.EndSec ?? file.Duration), s.TagId, s.Tag?.Name))
                 .Where(s => s.End > s.Start).ToArray();
-            if (kind == "tag" && ranges.Length == 0)
+            IReadOnlyList<SourceSegment>? allowedRanges = kind switch
             {
-                exclusions.Add($"Video {video.Id}: no matching timed tag segment");
+                "tag" => ranges.Where(s => s.TagId.HasValue && ids.Contains(s.TagId.Value)).ToArray(),
+                "segment" => ranges.Where(s => ids.Contains(s.Id)).ToArray(),
+                _ => null
+            };
+            if (selectedTagIds.Length > 0)
+            {
+                var tagged = ranges.Where(s => s.TagId.HasValue && selectedTagIds.Contains(s.TagId.Value)).ToArray();
+                allowedRanges = allowedRanges is null ? tagged : allowedRanges
+                    .SelectMany(selected => tagged.Select(taggedRange =>
+                        new SourceSegment(selected.Id, Math.Max(selected.Start, taggedRange.Start),
+                            Math.Min(selected.End, taggedRange.End), selected.TagId, selected.TagName)))
+                    .Where(s => s.End > s.Start).ToArray();
+            }
+            if (allowedRanges is { Count: 0 })
+            {
+                exclusions.Add($"Video {video.Id}: no matching timed segment range");
                 continue;
             }
             var savedRanges = video.ClipStartSec.HasValue && video.ClipEndSec.HasValue && video.ClipEndSec > video.ClipStartSec
@@ -123,7 +152,7 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
                 : [];
             result.Add(new(video.Id, file.Path, file.Duration, file.Width, file.Height, file.FrameRate,
                 video.StudioId, video.Studio?.Name, video.VideoPerformers.Select(x => x.PerformerId).ToArray(),
-                video.VideoPerformers.Select(x => x.Performer?.Name ?? "").ToArray(), ranges, savedRanges));
+                video.VideoPerformers.Select(x => x.Performer?.Name ?? "").ToArray(), ranges, savedRanges, allowedRanges));
         }
         return new(result, exclusions, launchName, kind);
     }

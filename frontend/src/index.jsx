@@ -67,9 +67,10 @@ const stylePresets = {
   cinematic: { motionIntensityMin: 0.1, motionIntensityMax: 0.3, transitionIntensityMin: 0.35, transitionIntensityMax: 0.65, flashIntensityMin: 0, flashIntensityMax: 0, glitchIntensityMin: 0, glitchIntensityMax: 0 }
 };
 const optionHelp = {
-  layout: "Three portrait panes arrange three clips side by side. Full screen shows one clip. The frame follows a common source aspect ratio when possible.",
+  layout: "Choose three portrait panes, a four-video grid, full screen, or a layout that alternates with full screen at phrase boundaries.",
   useVerticalVideosOnly: "Only portrait source videos may appear in the three-pane edit. Landscape videos are excluded before planning.",
   selectionMode: "For landscape footage, choose a random vertical crop, the center crop, or a crop around a detected face.",
+  fullSelectionMode: "Scene uses a usable shot. Face match also requires a selected performer's face throughout the full-screen shot.",
   keepFaceCentered: "Moves a full-height portrait crop horizontally with the chosen face. It never zooms in on the face.",
   matchSelectedPerformers: "Matches detected faces against the selected performers' Cove images. A range without a confident match is skipped.",
   faceSimilarityThreshold: "Minimum SFace cosine similarity for a chosen performer's face. Higher is stricter; 0.45 is the default.",
@@ -203,7 +204,7 @@ function FolderPicker({ kind, current, onChoose, onClose }) {
 }
 
 const defaultOptions = {
-  layout: "three-pane", useVerticalVideosOnly: false, selectionMode: "face", keepFaceCentered: true,
+  layout: "three-pane", useVerticalVideosOnly: false, selectionMode: "face", fullSelectionMode: "scene", segmentTagIds: [], keepFaceCentered: true,
   matchSelectedPerformers: true, faceSimilarityThreshold: 0.45, mirrorRepeatedSource: true,
   sampledClipsProgress: true, minimumTimestampSeconds: 0, endBufferSeconds: 0,
   cycleLongerClipIntoSegments: true, rotatedClipLengthSeconds: 30, beatsPerBar: "auto",
@@ -216,17 +217,57 @@ const defaultOptions = {
   keepPerformers: true, keepTags: true, addPmvTag: true, addAutoPmvTag: true
 };
 
+function needsFaceReferences(options) {
+  const sliceMode = ["three-pane", "three-pane-full", "grid", "grid-full"].includes(options.layout)
+    && (!options.useVerticalVideosOnly || ["grid", "grid-full"].includes(options.layout))
+    && options.selectionMode === "face";
+  const fullMode = ["full-screen", "three-pane-full", "grid-full"].includes(options.layout)
+    && options.fullSelectionMode === "face";
+  return options.matchSelectedPerformers !== false && (sliceMode || fullMode);
+}
+
+function SegmentTagPicker({ ids, onChange }) {
+  const [query, setQuery] = useState("");
+  const [tags, setTags] = useState([]);
+  const [selected, setSelected] = useState([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!ids?.length) { setSelected([]); return; }
+    api("/segment-tags?ids=" + ids.join(",")).then(setSelected).catch(e => setError(e.message));
+  }, [JSON.stringify(ids || [])]);
+  useEffect(() => {
+    if (query.trim().length < 2) { setTags([]); return; }
+    let active = true;
+    const timer = window.setTimeout(() => api("/segment-tags?q=" + encodeURIComponent(query.trim()))
+      .then(rows => { if (active) { setTags(rows); setError(""); } })
+      .catch(e => { if (active) setError(e.message); }), 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [query]);
+  const chosen = ids || [];
+  return <fieldset className="pmv-face-picker"><legend>Segment list</legend>
+    <p>When populated, only time inside matching timed segment tags is eligible. Multiple tags match either tag.</p>
+    <input aria-label="Search segment tags" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search segment tags, e.g. fingers" />
+    {error && <p role="alert">{error}</p>}
+    <div className="pmv-face-list">{selected.map(tag => <button type="button" key={tag.id} className="selected" onClick={() => onChange(chosen.filter(id => id !== tag.id))}>{tag.name} ×</button>)}
+      {tags.filter(tag => !chosen.includes(tag.id)).map(tag => <button type="button" key={tag.id} onClick={() => { onChange([...chosen, tag.id]); setQuery(""); }}>{tag.name} +</button>)}</div>
+  </fieldset>;
+}
+
 function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions(current => ({ ...current, [key]: value }));
+  const slices = ["three-pane", "three-pane-full", "grid", "grid-full"].includes(options.layout);
+  const portrait = ["three-pane", "three-pane-full"].includes(options.layout);
+  const full = ["full-screen", "three-pane-full", "grid-full"].includes(options.layout);
   return <>
     <div className="pmv-form-heading"><h5>Layout settings</h5><span>01</span></div>
     <div className="pmv-grid">
-      <Control label="Layout" help={optionHelp.layout}>{id => <select id={id} value={options.layout} onChange={e => set("layout", e.target.value)}><option value="three-pane">Three portrait panes</option><option value="full-screen">Full screen</option></select>}</Control>
-      {options.layout === "three-pane" && <Control label="Use vertical videos only" help={optionHelp.useVerticalVideosOnly} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options.useVerticalVideosOnly} onChange={e => set("useVerticalVideosOnly", e.target.checked)} />}</Control>}
-      {options.layout === "three-pane" && !options.useVerticalVideosOnly && <Control label="Selection mode" help={optionHelp.selectionMode}>{id => <select id={id} value={options.selectionMode || "center"} onChange={e => set("selectionMode", e.target.value)}><option value="random">Random slice</option><option value="center">Center slice</option><option value="face">Face slice</option></select>}</Control>}
-      {options.layout === "three-pane" && !options.useVerticalVideosOnly && options.selectionMode === "face" && <Control label="Keep face centered" help={optionHelp.keepFaceCentered} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.keepFaceCentered !== false} onChange={e => set("keepFaceCentered", e.target.checked)} />}</Control>}
-      {options.layout === "three-pane" && !options.useVerticalVideosOnly && options.selectionMode === "face" && <Control label="Match selected performers" help={optionHelp.matchSelectedPerformers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.matchSelectedPerformers !== false} onChange={e => set("matchSelectedPerformers", e.target.checked)} />}</Control>}
-      {options.layout === "three-pane" && <Control label="Mirror repeated source" help={optionHelp.mirrorRepeatedSource} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.mirrorRepeatedSource !== false} onChange={e => set("mirrorRepeatedSource", e.target.checked)} />}</Control>}
+      <Control label="Layout" help={optionHelp.layout}>{id => <select id={id} value={options.layout} onChange={e => set("layout", e.target.value)}><option value="three-pane">Three portrait panes</option><option value="full-screen">Full screen</option><option value="grid">Four-video grid</option><option value="three-pane-full">Three portrait panes + full</option><option value="grid-full">Grid + full</option></select>}</Control>
+      {portrait && <Control label="Use vertical videos only" help={optionHelp.useVerticalVideosOnly} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options.useVerticalVideosOnly} onChange={e => set("useVerticalVideosOnly", e.target.checked)} />}</Control>}
+      {slices && (!portrait || !options.useVerticalVideosOnly) && <Control label="Slice selection mode" help={optionHelp.selectionMode}>{id => <select id={id} value={options.selectionMode || "center"} onChange={e => set("selectionMode", e.target.value)}><option value="random">Random slice</option><option value="center">Center slice</option><option value="face">Face slice</option></select>}</Control>}
+      {slices && options.selectionMode === "face" && (!portrait || !options.useVerticalVideosOnly) && <Control label="Keep face centered" help={optionHelp.keepFaceCentered} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.keepFaceCentered !== false} onChange={e => set("keepFaceCentered", e.target.checked)} />}</Control>}
+      {full && <Control label="Full-screen selection mode" help={optionHelp.fullSelectionMode}>{id => <select id={id} value={options.fullSelectionMode || "scene"} onChange={e => set("fullSelectionMode", e.target.value)}><option value="scene">Scene</option><option value="face">Face match</option></select>}</Control>}
+      {((slices && options.selectionMode === "face" && (!portrait || !options.useVerticalVideosOnly)) || (full && options.fullSelectionMode === "face")) && <Control label="Match selected performers" help={optionHelp.matchSelectedPerformers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.matchSelectedPerformers !== false} onChange={e => set("matchSelectedPerformers", e.target.checked)} />}</Control>}
+      {portrait && <Control label="Mirror repeated source" help={optionHelp.mirrorRepeatedSource} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.mirrorRepeatedSource !== false} onChange={e => set("mirrorRepeatedSource", e.target.checked)} />}</Control>}
     </div>
     <div className="pmv-form-heading"><h5>Creative direction</h5><span>02</span></div>
     <div className="pmv-grid">
@@ -240,7 +281,7 @@ function OptionForm({ options, setOptions }) {
       <Control label="Cycle longer clip into segments" help={optionHelp.cycleLongerClipIntoSegments} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.cycleLongerClipIntoSegments !== false} onChange={e => set("cycleLongerClipIntoSegments", e.target.checked)} />}</Control>
       {[["minimumTimestampSeconds", "Clip minimum timestamp"], ["endBufferSeconds", "Keep clear before source end"], ["rotatedClipLengthSeconds", "Rotated scene length"]].map(([key, label]) => <Control key={key} label={`${label} (sec)`} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" max={key === "rotatedClipLengthSeconds" ? 300 : undefined} step="0.5" value={options[key] ?? 0} onChange={e => set(key, Number(e.target.value))} />}</Control>)}
       <Control label="Beats per bar" help={optionHelp.beatsPerBar}>{id => <select id={id} value={options.beatsPerBar || "auto"} onChange={e => set("beatsPerBar", e.target.value)}><option value="auto">Auto</option><option value="3">3</option><option value="4">4</option><option value="6">6</option></select>}</Control>
-      {options.selectionMode === "face" && options.layout === "three-pane" && options.matchSelectedPerformers !== false && <Control label="Face similarity threshold" help={optionHelp.faceSimilarityThreshold}>{id => <div className="pmv-range"><input id={id} type="range" min="0.3" max="0.8" step="0.01" value={options.faceSimilarityThreshold ?? 0.45} onChange={e => set("faceSimilarityThreshold", Number(e.target.value))} /><output>{Number(options.faceSimilarityThreshold ?? 0.45).toFixed(2)}</output></div>}</Control>}
+      {((slices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && options.matchSelectedPerformers !== false && <Control label="Face similarity threshold" help={optionHelp.faceSimilarityThreshold}>{id => <div className="pmv-range"><input id={id} type="range" min="0.3" max="0.8" step="0.01" value={options.faceSimilarityThreshold ?? 0.45} onChange={e => set("faceSimilarityThreshold", Number(e.target.value))} /><output>{Number(options.faceSimilarityThreshold ?? 0.45).toFixed(2)}</output></div>}</Control>}
       {["beatAdherence", "sourceDiversity"].map(key => <Control key={key} label={key === "beatAdherence" ? "Beat adherence" : "Source diversity"} help={optionHelp[key]}>{id => <div className="pmv-range"><input id={id} type="range" min="0" max="1" step="0.05" value={options[key]} onChange={e => set(key, Number(e.target.value))} /><output>{Number(options[key]).toFixed(2)}</output></div>}</Control>)}
       {["songTrimStart", "songTrimEnd"].map((key, i) => <Control key={key} label={["Song start (sec)", "Song end (sec)"][i]} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
       <Control label="FPS override" help={optionHelp.outputFps}>{id => <select id={id} value={options.outputFps ?? ""} onChange={e => set("outputFps", e.target.value ? Number(e.target.value) : null)}><option value="">Auto</option><option value="24">24 fps</option><option value="25">25 fps</option><option value="30">30 fps</option><option value="50">50 fps</option><option value="60">60 fps</option></select>}</Control>
@@ -340,7 +381,8 @@ export function PmvSettingsPanel() {
     <section className="pmv-panel"><div className="pmv-section-heading"><h4>Job defaults</h4><p>These choices appear in each Create PMV popup and can be changed per job.</p></div>
       <div className="pmv-grid"><Control label="Default backing audio source" help="Choose the audio source shown when Create PMV opens.">{id => <select id={id} value={settings.defaultAudioKind || "cove"} onChange={e => set("defaultAudioKind", e.target.value)}><option value="cove">Cove audio</option><option value="folder">Configured music folder</option><option value="upload">Choose song file</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control>
       <Control label="Default face performer gender" help="Prefilters the performers offered for face matching. This uses Cove metadata and does not guess gender from appearance.">{id => <select id={id} value={settings.defaultFaceGender || "female"} onChange={e => set("defaultFaceGender", e.target.value)}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans performers</option><option value="all">All performers</option></select>}</Control></div>
-      <OptionForm options={defaults} setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)} /></section>
+      <OptionForm options={defaults} setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)} />
+      <SegmentTagPicker ids={defaults.segmentTagIds} onChange={ids => set("defaults", { ...defaults, segmentTagIds: ids })} /></section>
     <div className="pmv-settings-footer"><button className="pmv-button-primary" disabled={!automatic && !mappingValid} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); if (automatic) setLocal(await api("/local-companion")); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></div>
     </>}
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
@@ -503,7 +545,7 @@ function PmvDialog({ context, close }) {
     return () => { active = false; window.clearTimeout(timer); };
   }, [JSON.stringify(scope), JSON.stringify(options)]);
   const create = async () => { if (!audioReady) { setError("Choose a backing track before creating the PMV."); return; }
-    if (options.layout === "three-pane" && !options.useVerticalVideosOnly && options.selectionMode === "face" && options.matchSelectedPerformers !== false && !faceIds.length) { setError("Choose at least one performer with a reference image, or turn off performer matching."); return; }
+    if (needsFaceReferences(options) && !faceIds.length) { setError("Choose at least one performer with a reference image, or turn off performer matching."); return; }
     setBusy(true); setError(""); try {
     await api("/create", "POST", request);
     audioPlayer.current?.pause(); close();
@@ -511,14 +553,16 @@ function PmvDialog({ context, close }) {
   return <div className="pmv-overlay" role="dialog" aria-modal="true" aria-label="Create PMV"><div className="pmv-dialog">
     <header><h2>Create PMV</h2><button onClick={cancel} aria-label="Close">×</button></header>
     <p>{preview ? `${preview.eligibleCount} eligible sources · ${preview.proposedFilename}` : "Checking sources…"}</p>
+    {preview?.eligibilityNote && <p role="alert">{preview.eligibilityNote}</p>}
     {!!preview?.exclusions?.length && <details><summary>{preview.exclusions.length} excluded sources</summary><ul>{preview.exclusions.map((x, i) => <li key={i}>{x}</li>)}</ul></details>}
-    {options.layout === "three-pane" && !options.useVerticalVideosOnly && options.selectionMode === "face" && options.matchSelectedPerformers !== false && <fieldset className="pmv-face-picker"><legend>Faces to follow</legend>
+    {needsFaceReferences(options) && <fieldset className="pmv-face-picker"><legend>Faces to follow</legend>
       <p>Only confident matches to selected Cove performers are used. Matching also searches videos without performer tags.</p>
       <div className="pmv-grid"><Control label="Select by gender" help="Uses performer metadata, not a gender classifier.">{id => <select id={id} value={faceGender} onChange={e => setFaceGender(e.target.value)}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans performers</option><option value="all">All performers</option></select>}</Control>
       <Control label="Search all Cove performers" help="Add a performer even if the selected videos are not tagged with them.">{id => <input id={id} value={faceQuery} onChange={e => setFaceQuery(e.target.value)} placeholder="Search by name" />}</Control></div>
       <div className="pmv-face-actions"><button type="button" onClick={() => setFaceIds([...new Set([...(faceIds || []), ...(preview?.performers || []).filter(p => p.hasReference && genderFits(p, faceGender)).map(p => p.id)])])}>Select matching</button><button type="button" onClick={() => setFaceIds([])}>Deselect all</button><small>{faceIds.length} selected</small></div>
       <div className="pmv-face-list">{[...(preview?.performers || []), ...faceSearch.filter(p => !(preview?.performers || []).some(x => x.id === p.id))].filter(person => genderFits(person, faceGender) || faceIds.includes(person.id)).map(person => <button type="button" key={person.id} className={faceIds.includes(person.id) ? "selected" : ""} disabled={!person.hasReference} onClick={() => setFaceIds(current => current.includes(person.id) ? current.filter(id => id !== person.id) : [...current, person.id])} aria-pressed={faceIds.includes(person.id)}>{person.name}{!person.hasReference ? " · no reference image" : ""}</button>)}</div>
     </fieldset>}
+    <SegmentTagPicker ids={options.segmentTagIds} onChange={ids => setOptions(current => ({ ...current, segmentTagIds: ids }))} />
     <fieldset><legend>Backing audio</legend><div className="pmv-grid">
       <Control label="Source" help="Choose a backing song from Cove, the configured music folder, a local song file, YouTube, or a Cove video's audio.">{id => <select id={id} value={audio.kind} onChange={e => changeAudioKind(e.target.value)}><option value="cove">Cove audio</option><option value="folder">Configured music folder</option><option value="upload">Choose song file</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control>
       {audio.kind === "upload" && <Control label="Song file" help="Upload an audio file directly from your computer. The companion stores it temporarily and removes it after the PMV job.">{id => <><input id={id} type="file" accept=".mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.aiff,audio/*" onChange={e => chooseSong(e.target.files?.[0])} /><small>{uploading ? "Uploading song…" : audio.uploadId ? `${audio.name} ready` : "Choose an audio file up to 200 MB."}</small></>}</Control>}
@@ -543,7 +587,7 @@ function PmvDialog({ context, close }) {
       onError={() => { setPlayingUrl(""); setError("Could not play this track. Check that Cove can read it and your account can stream audio."); }} /></fieldset>
     <OptionForm options={options} setOptions={setOptions} />
     {(error || settingsError) && <p role="alert">{error || settingsError}</p>}
-    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={cancel}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || uploading || !audioReady || !preview?.eligibleCount} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
+    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={cancel}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || uploading || !audioReady || !preview?.canCreate} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
   </div></div>;
 }
 

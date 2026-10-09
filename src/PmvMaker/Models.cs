@@ -33,6 +33,8 @@ public sealed class PmvOptions
     public string Layout { get; set; } = "three-pane";
     public bool UseVerticalVideosOnly { get; set; }
     public string SelectionMode { get; set; } = "face";
+    public string FullSelectionMode { get; set; } = "scene";
+    public int[] SegmentTagIds { get; set; } = [];
     public bool KeepFaceCentered { get; set; } = true;
     public bool MatchSelectedPerformers { get; set; } = true;
     public double FaceSimilarityThreshold { get; set; } = 0.45;
@@ -102,7 +104,7 @@ public sealed class PmvRequest
 
 public sealed record SourceVideo(int Id, string Path, double Duration, int Width, int Height, double Fps,
     int? StudioId, string? StudioName, int[] PerformerIds, string[] PerformerNames, IReadOnlyList<SourceSegment> Segments,
-    IReadOnlyList<SourceRange> SavedRanges);
+    IReadOnlyList<SourceRange> SavedRanges, IReadOnlyList<SourceSegment>? AllowedSegments = null);
 public sealed record SourceSegment(int Id, double Start, double End, int? TagId, string? TagName);
 public sealed record SourceRange(double Start, double End);
 public sealed record ScopeResult(IReadOnlyList<SourceVideo> Videos, IReadOnlyList<string> Exclusions,

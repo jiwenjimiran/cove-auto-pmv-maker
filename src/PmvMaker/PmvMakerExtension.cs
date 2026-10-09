@@ -32,7 +32,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.15";
+    public string Version => "0.1.16";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -66,6 +66,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             new("pmv-performer-bulk", "Create PMV", ExtensionId, "bulk", ["performer"], "Clapperboard", HandlerName: "openPmv") { RequiredPermission = "videos.read" },
             new("pmv-studio-bulk", "Create PMV", ExtensionId, "bulk", ["studio"], "Clapperboard", HandlerName: "openPmv") { RequiredPermission = "videos.read" },
             new("pmv-tag-bulk", "Create PMV", ExtensionId, "bulk", ["tag"], "Clapperboard", HandlerName: "openPmv") { RequiredPermission = "videos.read" },
+            new("pmv-segment-bulk", "Create PMV", ExtensionId, "bulk", ["segment"], "Clapperboard", HandlerName: "openPmv") { RequiredPermission = "segments.read" },
             new("pmv-video-detail", "Create PMV", ExtensionId, "toolbar", ["video"], "Clapperboard", HandlerName: "openPmv") { RequiredPermission = "videos.read" }
             ,new("pmv-performer-detail", "Create PMV from filtered videos", ExtensionId, "toolbar", ["performer"], "Clapperboard", HandlerName: "openPmv") { RequiredPermission = "videos.read" }
             ,new("pmv-studio-detail", "Create PMV from filtered videos", ExtensionId, "toolbar", ["studio"], "Clapperboard", HandlerName: "openPmv") { RequiredPermission = "videos.read" }
@@ -201,6 +202,20 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 .ToArrayAsync(ctx.RequestAborted);
             return Results.Json(performers, Json);
         }).RequireCovePermission("performers.read");
+        MapGetResult(endpoints, "/api/ext/pmv/segment-tags", async (HttpContext ctx) =>
+        {
+            var query = ctx.Request.Query["q"].ToString().Trim();
+            var ids = ctx.Request.Query["ids"].ToString().Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(value => int.TryParse(value, out var id) ? id : 0).Where(id => id > 0).Distinct().Take(100).ToArray();
+            await using var scope = _scopes!.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var tags = await db.Tags.AsNoTracking().Where(tag => ids.Contains(tag.Id) || query.Length >= 2 && tag.Name.Contains(query))
+                .OrderBy(tag => tag.Name).Take(100).Select(tag => new { tag.Id, tag.Name }).ToArrayAsync(ctx.RequestAborted);
+            var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;
+            var decisions = await scope.ServiceProvider.GetRequiredService<IAuthorizationService>().AuthorizeManyAsync(principal,
+                "tags.read", tags.Select(tag => new EntityRef(EntityKinds.Tag, tag.Id.ToString())).ToArray(), ctx.RequestAborted);
+            return Results.Json(tags.Where((_, index) => decisions[index].Allowed), Json);
+        }).RequireCovePermission("tags.read");
         MapPutResult(endpoints, "/api/ext/pmv/settings", async (HttpContext ctx) =>
         {
             var settings = await ctx.Request.ReadFromJsonAsync<PmvSettings>(Json, ctx.RequestAborted) ?? new();
@@ -352,12 +367,13 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 return Results.BadRequest(new { message = optionError });
             await using var scope = _scopes!.CreateAsyncScope();
             var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;
-            ScopeResult result;
-            try { result = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted); }
-            catch (UnauthorizedAccessException) { return Results.Forbid(); }
             var settings = await SettingsAsync(ctx.RequestAborted);
-            result = FilterSourcesForLayout(result, request.Options ?? settings.Defaults);
-            var stem = result.Videos.Count == 0 ? "PMVMAKER_Multi" : PmvNaming.Stem(result, result.Videos, result.Videos.SelectMany(v => v.Segments).Select(s => s.Id).ToArray());
+            var options = request.Options ?? settings.Defaults;
+            ScopeResult result;
+            try { result = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted, options); }
+            catch (UnauthorizedAccessException) { return Results.Forbid(); }
+            result = FilterSourcesForLayout(result, options);
+            var stem = result.Videos.Count == 0 ? "PMVMAKER_Multi" : PmvNaming.Stem(result, result.Videos, result.Videos.SelectMany(v => v.AllowedSegments ?? v.Segments).Select(s => s.Id).ToArray());
             var performerIds = result.Videos.SelectMany(v => v.PerformerIds).Distinct().ToArray();
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
             var performers = await db.Performers.AsNoTracking()
@@ -365,7 +381,13 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 .Select(p => new { p.Id, p.Name, p.Gender,
                     HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && f.CoverBlobId != null && !f.Ignored) })
                 .ToArrayAsync(ctx.RequestAborted);
-            return Results.Json(new { eligibleCount = result.Videos.Count, exclusions = result.Exclusions, performers,
+            var gridShort = options.Layout is "grid" or "grid-full" && result.Videos.Count < 4;
+            var portraitShort = options.Layout is "three-pane-full" && options.UseVerticalVideosOnly
+                && !result.Videos.Any(video => video.Height > video.Width);
+            return Results.Json(new { eligibleCount = result.Videos.Count, canCreate = result.Videos.Count > 0 && !gridShort && !portraitShort,
+                eligibilityNote = gridShort ? "Grid needs at least four eligible landscape videos." : portraitShort
+                    ? "Three-pane phases need at least one portrait video." : (string?)null,
+                exclusions = result.Exclusions, performers,
                 proposedFilename = PmvNaming.Proposed(settings.OutputFolder, stem, settings.ProjectFolder,
                     request.Options?.SaveProject ?? settings.Defaults.SaveProject) }, Json);
         }).RequireCovePermission("videos.read");
@@ -385,15 +407,19 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             await using var scope = _scopes!.CreateAsyncScope();
             var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;
             ScopeResult resolved;
-            try { resolved = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted); }
+            try { resolved = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted, request.Options ?? settings.Defaults); }
             catch (UnauthorizedAccessException) { return Results.Forbid(); }
             resolved = FilterSourcesForLayout(resolved, request.Options ?? settings.Defaults);
             var requestedOptions = request.Options ?? settings.Defaults;
-            if (requestedOptions.Layout == "three-pane" && requestedOptions.SelectionMode == "face"
-                && requestedOptions.MatchSelectedPerformers
+            if (NeedsFaceReferences(requestedOptions)
                 && !scope.ServiceProvider.GetRequiredService<IAuthorizationService>().Has(principal, "performers.read"))
                 return Results.Forbid();
             if (resolved.Videos.Count == 0) return Results.BadRequest(new { message = "No eligible sources.", exclusions = resolved.Exclusions });
+            if (requestedOptions.Layout is "grid" or "grid-full" && resolved.Videos.Count < 4)
+                return Results.BadRequest(new { message = "Grid needs at least four eligible landscape videos.", exclusions = resolved.Exclusions });
+            if (requestedOptions.Layout == "three-pane-full" && requestedOptions.UseVerticalVideosOnly
+                && !resolved.Videos.Any(video => video.Height > video.Width))
+                return Results.BadRequest(new { message = "Three-pane phases need a portrait video.", exclusions = resolved.Exclusions });
             var health = await CompanionGetAsync(settings, "health", ctx.RequestAborted);
             if (!health.GetProperty("ok").GetBoolean()) return Results.BadRequest(new { message = "Resolve Studio companion is unhealthy.", health });
             if (!settings.SkipSetupChecks && (!health.TryGetProperty("validated", out var validated) || !validated.GetBoolean()))
@@ -444,6 +470,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static string? NewOptionError(PmvOptions options)
     {
+        if (options.Layout is not ("three-pane" or "full-screen" or "grid" or "three-pane-full" or "grid-full"))
+            return "Choose a supported PMV layout.";
+        if (options.FullSelectionMode is not ("scene" or "face"))
+            return "Full-screen selection must be Scene or Face match.";
+        if (options.SegmentTagIds is null || options.SegmentTagIds.Length > 100 || options.SegmentTagIds.Any(id => id <= 0))
+            return "Segment list must contain at most 100 valid tags.";
         if (options.FaceSimilarityThreshold is < 0.3 or > 0.8 || !double.IsFinite(options.FaceSimilarityThreshold))
             return "Face similarity threshold must be between 0.30 and 0.80.";
         if (options.MinimumTimestampSeconds < 0 || options.EndBufferSeconds < 0
@@ -473,15 +505,14 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<PmvMakerExtension>>();
         var options = request.Options ?? settings.Defaults;
-        var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct), options);
+        var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct, options), options);
         if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
         logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; layout {Layout}, selection {Selection}, audio {AudioKind}",
             resolved.Videos.Count, resolved.Exclusions.Count, options.Layout, options.SelectionMode, request.Audio.Kind);
         var referenceIds = new List<string>();
         try
         {
-        var faceMode = options.Layout == "three-pane" && !options.UseVerticalVideosOnly
-            && options.SelectionMode == "face" && options.MatchSelectedPerformers;
+        var faceMode = NeedsFaceReferences(options);
         var references = faceMode
             ? await UploadFaceReferencesAsync(db, scope.ServiceProvider.GetRequiredService<IBlobService>(),
                 request.FacePerformerIds, resolved, settings, referenceIds, ct)
@@ -494,8 +525,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var payload = new
         {
             sources = resolved.Videos.Select(v => new { v.Id, path = ToHost(v.Path, settings), v.Duration, v.Width, v.Height, v.Fps,
-                tagOnly = resolved.LaunchKind == "tag",
-                v.StudioId, v.StudioName, v.PerformerIds, v.PerformerNames, v.Segments, v.SavedRanges }),
+                tagOnly = v.AllowedSegments is not null,
+                v.StudioId, v.StudioName, v.PerformerIds, v.PerformerNames,
+                segments = v.AllowedSegments ?? v.Segments, allSegments = v.Segments, v.SavedRanges }),
             launchName = resolved.LaunchName,
             launchKind = resolved.LaunchKind,
             audio = await AudioPayloadAsync(request.Audio, settings, db, scope.ServiceProvider.GetRequiredService<IAuthorizationService>(), principal, ct),
@@ -685,10 +717,15 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 excluded.Add($"Video {video.Id}: timestamp limits leave less than the minimum clip length");
                 continue;
             }
-            if (source.LaunchKind == "tag" && !video.Segments.Any(s =>
+            if (video.AllowedSegments is not null && !video.AllowedSegments.Any(s =>
                 Math.Min(upper, s.End) - Math.Max(lower, s.Start) >= options.MinClipSeconds))
             {
                 excluded.Add($"Video {video.Id}: no matching timed segment inside timestamp limits");
+                continue;
+            }
+            if (options.Layout is "grid" or "grid-full" && video.Height > video.Width)
+            {
+                excluded.Add($"Video {video.Id}: portrait source excluded from grid");
                 continue;
             }
             if (options.Layout == "three-pane" && options.UseVerticalVideosOnly && video.Height <= video.Width)
@@ -699,6 +736,16 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             eligible.Add(video);
         }
         return new ScopeResult(eligible, excluded, source.LaunchName, source.LaunchKind);
+    }
+
+    private static bool NeedsFaceReferences(PmvOptions options)
+    {
+        var multiFace = options.Layout is "three-pane" or "three-pane-full" or "grid" or "grid-full"
+            && (options.Layout is "grid" or "grid-full" || !options.UseVerticalVideosOnly)
+            && options.SelectionMode == "face";
+        var fullFace = options.Layout is "full-screen" or "three-pane-full" or "grid-full"
+            && options.FullSelectionMode == "face";
+        return options.MatchSelectedPerformers && (multiFace || fullFace);
     }
 
     private static bool OutputInScanRoot(string path, IServiceProvider services)

@@ -54,7 +54,7 @@ def choose_format(sources, layout, options):
     ratios = [int(s["width"]) / int(s["height"]) for s in sources]
     common = max(ratios) - min(ratios) <= sum(ratios) / len(ratios) * 0.02
     ratio = sum(ratios) / len(ratios) if common else 16 / 9
-    if layout == "three-pane" and ratio < 1:
+    if layout in ("three-pane", "three-pane-full") and ratio < 1:
         ratio = 16 / 9
     if ratio >= 1:
         width, height = 2 * round(base * ratio / 2), base
@@ -121,6 +121,11 @@ class Clip:
     face_track: tuple[tuple[float, float], ...] = ()
     matched_performer_id: int | None = None
     mirrored: bool = False
+    layout_role: str = ""
+    expansion_from: int | None = None
+    expansion_duration: float = 0.0
+    underlay: bool = False
+    expansion_layout: str = ""
 
 
 def option_range(options, key, phase, default):
@@ -327,7 +332,7 @@ def mix_audio(song, clips, options, temp, duration, trim_start=0, cancel=None):
     mode = options.get("sourceAudio", "mixed")
     filters = ["[0:a]aresample=48000,volume=0.78,atrim=duration=%f,asetpts=PTS-STARTPTS[song]" % duration]
     inputs = ["-ss", str(trim_start), "-t", str(duration), "-i", song]
-    selected = [] if mode == "muted" else [c for c in clips if mode == "all" or c.pane == 0 and c.accent]
+    selected = [] if mode == "muted" else [c for c in clips if not c.underlay and (mode == "all" or c.pane == 0 and c.accent)]
     # A mirrored outside pair is one source event, not two audio accents.
     selected = list({(c.path, round(c.source_start, 3), round(c.record_start, 3)): c
                      for c in selected if not c.mirrored}.values())
