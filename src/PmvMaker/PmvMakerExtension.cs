@@ -209,8 +209,15 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 .Select(value => int.TryParse(value, out var id) ? id : 0).Where(id => id > 0).Distinct().Take(100).ToArray();
             await using var scope = _scopes!.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var tags = await db.Tags.AsNoTracking().Where(tag => ids.Contains(tag.Id) || query.Length >= 2 && tag.Name.Contains(query))
-                .OrderBy(tag => tag.Name).Take(100).Select(tag => new { tag.Id, tag.Name }).ToArrayAsync(ctx.RequestAborted);
+            var tags = await db.Tags.AsNoTracking()
+                .Where(tag => ids.Contains(tag.Id) || query.Length >= 2 && tag.Name.Contains(query)
+                    && db.Segments.Any(segment => segment.HostType == SegmentHostType.Video
+                        && segment.TagId == tag.Id && segment.EndSec > segment.StartSec))
+                .OrderBy(tag => tag.Name).Take(100)
+                .Select(tag => new { tag.Id, tag.Name,
+                    HasTimedSegments = db.Segments.Any(segment => segment.HostType == SegmentHostType.Video
+                        && segment.TagId == tag.Id && segment.EndSec > segment.StartSec) })
+                .ToArrayAsync(ctx.RequestAborted);
             var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;
             var decisions = await scope.ServiceProvider.GetRequiredService<IAuthorizationService>().AuthorizeManyAsync(principal,
                 "tags.read", tags.Select(tag => new EntityRef(EntityKinds.Tag, tag.Id.ToString())).ToArray(), ctx.RequestAborted);

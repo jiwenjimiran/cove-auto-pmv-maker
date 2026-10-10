@@ -252,7 +252,7 @@ function SegmentTagPicker({ ids, onChange }) {
     <p>When populated, only time inside matching timed segment tags is eligible. Multiple tags match either tag.</p>
     <input aria-label="Search segment tags" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search segment tags, e.g. fingers" />
     {error && <p role="alert">{error}</p>}
-    <div className="pmv-face-list">{selected.map(tag => <button type="button" key={tag.id} className="selected" onClick={() => onChange(chosen.filter(id => id !== tag.id))}>{tag.name} ×</button>)}
+    <div className="pmv-face-list">{selected.map(tag => <button type="button" key={tag.id} className="selected" onClick={() => onChange(chosen.filter(id => id !== tag.id))}>{tag.name}{tag.hasTimedSegments === false ? " (no timed segments)" : ""} ×</button>)}
       {tags.filter(tag => !chosen.includes(tag.id)).map(tag => <button type="button" key={tag.id} onClick={() => { onChange([...chosen, tag.id]); setQuery(""); }}>{tag.name} +</button>)}</div>
   </fieldset>;
 }
