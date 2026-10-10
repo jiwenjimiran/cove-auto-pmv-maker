@@ -142,7 +142,9 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                     return matcher.analyze_match(source["path"], start, span, pane_aspect,
                                                  bool(options.get("keepFaceCentered", True)), cancel,
                                                  (lambda reason: rejection_counts.update((reason,))) if log else None,
-                                                 allowed_performer_ids=source.get("performerIds") or [])
+                                                 allowed_performer_ids=source.get("performerIds") or [],
+                                                 face_observations=source.get("faceObservations") or [],
+                                                 source_dimensions=(source.get("width", 0), source.get("height", 0)))
                 started = time.monotonic()
                 window_count = 0
                 last_window_log = 0.0
@@ -197,6 +199,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                         detail = (f" with {reference_names.get(performer_id, f'performer #{performer_id}')} "
                                   f"at {similarity:.0%} match confidence (SFace cosine similarity, not a probability)"
                                   if performer_id is not None and similarity is not None else
+                                  f" with {reference_names.get(performer_id, f'performer #{performer_id}')} via linked Cove face data"
+                                  if performer_id is not None else
                                   " with a detected face" if matcher else "")
                         log(f"Selected slice from video {sid}: source {clock_time(start)}–{clock_time(start + required)}"
                             f" → song {clock_time(left)}–{clock_time(left + required)}, pane {pane + 1}{detail}; "

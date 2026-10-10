@@ -118,3 +118,4 @@ public sealed record CompanionJob(string Id, string State, double Progress, stri
     int[]? MatchedPerformerIds = null, IReadOnlyList<CompanionLogEvent>? Events = null);
 public sealed record CompanionLogEvent(long Sequence, string Level, string Message);
 public sealed record FaceReference(int PerformerId, string ReferenceId, string? PerformerName = null);
+public sealed record FaceObservation(int PerformerId, double Time, double Center, double Width, double Score);

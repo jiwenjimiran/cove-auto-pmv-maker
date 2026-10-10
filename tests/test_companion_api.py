@@ -1,4 +1,5 @@
 import json
+import gzip
 import sys
 import tempfile
 import threading
@@ -16,6 +17,35 @@ import server
 
 
 class CompanionApiTests(unittest.TestCase):
+    def test_gzipped_submission_retry_returns_original_job(self):
+        server.TOKEN = "a" * 32
+        server.JOBS.clear()
+        server.SUBMISSION_IDS.clear()
+        listener = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        thread = threading.Thread(target=listener.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{listener.server_port}"
+        raw = json.dumps({"sources": [{"id": 1}], "padding": "x" * 5_000_000}).encode()
+        self.assertGreater(len(raw), 4_000_000)
+        payload = gzip.compress(raw)
+        self.assertLess(len(payload), 4_000_000)
+        headers = {"Authorization": "Bearer " + server.TOKEN,
+                   "Content-Type": "application/json", "Content-Encoding": "gzip",
+                   "X-PMV-Request-Id": "a" * 32}
+        try:
+            with patch.object(server, "preflight", return_value=[]) as preflight, \
+                    patch.object(server, "do_job"):
+                first = json.load(urlopen(Request(base + "/jobs", data=payload, method="POST", headers=headers), timeout=2))
+                second = json.load(urlopen(Request(base + "/jobs", data=payload, method="POST", headers=headers), timeout=2))
+                self.assertEqual(first["id"], second["id"])
+                self.assertEqual(1, len(server.JOBS))
+                preflight.assert_called_once()
+        finally:
+            listener.shutdown()
+            listener.server_close()
+            server.JOBS.clear()
+            server.SUBMISSION_IDS.clear()
+
     def test_preflight_accepts_hardware_av1_when_resolve_rejects_native_codec(self):
         class Project:
             def GetRenderCodecs(self, format_name):

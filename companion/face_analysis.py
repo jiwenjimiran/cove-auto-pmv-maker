@@ -13,6 +13,50 @@ def clamp(value, lower, upper):
     return max(lower, min(upper, value))
 
 
+def cove_face_track(rows, start, duration, pane_aspect, source_width, source_height,
+                    allowed_performer_ids, keep_centered):
+    """Use linked Cove/AI Faces keyframes when they cover a proposed portrait shot."""
+    if not rows or source_width <= 0 or source_height <= 0:
+        return None
+    allowed = set(int(value) for value in allowed_performer_ids or ())
+    crop_width = min(1.0, pane_aspect * source_height / source_width)
+    end = start + duration
+    by_performer = {}
+    for row in rows:
+        performer = int(row["performerId"])
+        moment = float(row["time"])
+        center = float(row["center"])
+        face_width = float(row["width"])
+        if performer not in allowed or moment < start - 2.5 or moment > end + 2.5:
+            continue
+        if not (0 <= center <= 1 and 0 < face_width <= crop_width):
+            continue
+        by_performer.setdefault(performer, []).append((moment, center, face_width, float(row["score"])))
+    candidates = []
+    for performer, samples in by_performer.items():
+        samples.sort()
+        if len(samples) < 2 or not any(start <= row[0] <= end for row in samples):
+            continue
+        if samples[0][0] > start + 2.5 or samples[-1][0] < end - 2.5:
+            continue
+        if any(right[0] - left[0] > 2.5 for left, right in zip(samples, samples[1:])):
+            continue
+        if not keep_centered:
+            center = clamp(sum(row[1] for row in samples) / len(samples), crop_width / 2, 1 - crop_width / 2)
+            if any(abs(row[1] - center) + row[2] / 2 > crop_width / 2 for row in samples):
+                continue
+            track = ((0.0, center),)
+        else:
+            track = tuple((clamp(moment - start, 0, duration),
+                           clamp(center, crop_width / 2, 1 - crop_width / 2))
+                          for moment, center, _width, _score in samples)
+        candidates.append((len(samples), sum(row[3] for row in samples) / len(samples), performer, track))
+    if not candidates:
+        return None
+    _count, _score, performer, track = max(candidates)
+    return track, performer, None
+
+
 class FaceAnalyzer:
     def __init__(self, references=None, threshold=0.55):
         try:
@@ -53,7 +97,7 @@ class FaceAnalyzer:
                 self.reference_vectors = vectors / np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-8)
 
     def analyze_match(self, path, start, duration, pane_aspect, keep_centered, cancel=None, rejection=None,
-                      allowed_performer_ids=None):
+                      allowed_performer_ids=None, face_observations=None, source_dimensions=None):
         """Follow a selected identity through brief occlusion, without zooming."""
         def reject(reason):
             if rejection:
@@ -63,6 +107,12 @@ class FaceAnalyzer:
         if self.recognizer is None:
             track = self.analyze(path, start, duration, pane_aspect, keep_centered, cancel)
             return (track, None, None) if track is not None else reject("no continuous detectable face")
+        if source_dimensions and face_observations:
+            linked = cove_face_track(face_observations, start, duration, pane_aspect,
+                                     source_dimensions[0], source_dimensions[1],
+                                     allowed_performer_ids, keep_centered)
+            if linked is not None:
+                return linked
         allowed = frozenset(int(value) for value in (allowed_performer_ids or ()))
         if allowed_performer_ids is not None and not allowed:
             return reject("video has no linked performer to match")
@@ -78,6 +128,8 @@ class FaceAnalyzer:
             reference_vectors, reference_ids = self._allowed_cache[allowed]
             if reference_vectors is None:
                 return reject("linked performers have no selected reference face")
+        if reference_vectors is None:
+            return reject("no Cove face data or reference image for this video")
         cv2 = self.cv2
         capture = cv2.VideoCapture(str(path))
         if not capture.isOpened():

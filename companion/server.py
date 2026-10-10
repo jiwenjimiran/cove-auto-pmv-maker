@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import gzip
 import importlib
 import importlib.util
 import json
@@ -26,6 +27,7 @@ from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_m
 from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render, select_render_profile
 
 JOBS = {}
+SUBMISSION_IDS = {}
 LOCK = threading.Lock()
 RENDER_LOCK = threading.Lock()
 PICKER_LOCK = threading.Lock()
@@ -458,9 +460,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "Not found"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            print(f"[PMV companion] {path} request: {length} bytes, encoding={self.headers.get('Content-Encoding', 'identity')}",
+                  file=sys.stderr, flush=True)
             if length <= 0 or length > 4_000_000:
                 raise ValueError("Invalid job size")
-            payload = json.loads(self.rfile.read(length))
+            raw = self.rfile.read(length)
+            if self.headers.get("Content-Encoding", "").lower() == "gzip":
+                raw = gzip.decompress(raw)
+                if len(raw) > 32_000_000:
+                    raise ValueError("PMV job expands beyond the 32 MB limit")
+            payload = json.loads(raw)
+            request_id = self.headers.get("X-PMV-Request-Id", "") if path == "/jobs" else ""
+            if request_id and not re.fullmatch(r"[0-9a-f]{32}", request_id):
+                raise ValueError("Invalid PMV request ID")
+            if request_id:
+                with LOCK:
+                    existing_id = SUBMISSION_IDS.get(request_id)
+                    existing = JOBS.get(existing_id) if existing_id else None
+                if existing is not None:
+                    return self.reply(202, job_snapshot(existing))
             preflight(payload)
             if path == "/preflight":
                 return self.reply(200, {"ok": True})
@@ -469,11 +487,19 @@ class Handler(BaseHTTPRequestHandler):
                      "outputPath": None, "usedVideoIds": [], "usedSegmentIds": [], "error": None,
                      "cancelEvent": threading.Event(), "eventLock": threading.Lock(),
                      "eventSequence": 0, "events": []}
-            JOBS[job_id] = state
+            with LOCK:
+                if request_id in SUBMISSION_IDS:
+                    return self.reply(202, job_snapshot(JOBS[SUBMISSION_IDS[request_id]]))
+                JOBS[job_id] = state
+                if request_id:
+                    SUBMISSION_IDS[request_id] = job_id
             log_job_event(state, "Queued PMV render")
             threading.Thread(target=do_job, args=(job_id, payload), daemon=True).start()
+            print(f"[PMV companion] accepted job {job_id[:8]} with {len(payload.get('sources') or [])} sources",
+                  file=sys.stderr, flush=True)
             self.reply(202, job_snapshot(state))
         except Exception as exc:
+            print(f"[PMV companion] {path} rejected: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             self.reply(400, {"error": str(exc)})
 
     def do_DELETE(self):

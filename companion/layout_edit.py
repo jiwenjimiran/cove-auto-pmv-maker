@@ -194,7 +194,9 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                         if selection == "face":
                             evidence = matcher.analyze_match(previous["source"]["path"], start, required, aspect,
                                                              bool(options.get("keepFaceCentered", True)), cancel,
-                                                             allowed_performer_ids=previous["source"].get("performerIds") or [])
+                                                             allowed_performer_ids=previous["source"].get("performerIds") or [],
+                                                             face_observations=previous["source"].get("faceObservations") or [],
+                                                             source_dimensions=(previous["source"].get("width", 0), previous["source"].get("height", 0)))
                             if not evidence:
                                 continue
                         track, performer, similarity = evidence
@@ -229,7 +231,9 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                             return matcher.analyze_match(source["path"], start, span, aspect,
                                                          bool(options.get("keepFaceCentered", True)), cancel,
                                                          lambda reason: rejection_counts.update((reason,)),
-                                                         allowed_performer_ids=source.get("performerIds") or [])
+                                                         allowed_performer_ids=source.get("performerIds") or [],
+                                                         face_observations=source.get("faceObservations") or [],
+                                                         source_dimensions=(source.get("width", 0), source.get("height", 0)))
                         if progress:
                             progress(25 + 14 * left / duration,
                                      f"Choosing {role} cell {pane + 1}/{count}: video {sid}, song {left:.1f}s")
@@ -258,7 +262,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                         serial += offset + 1
                         if log:
                             name = reference_names.get(performer, f"performer #{performer}") if performer else ""
-                            match = f", {name} at {similarity:.0%} SFace similarity" if similarity is not None else ""
+                            match = (f", {name} at {similarity:.0%} SFace similarity" if similarity is not None
+                                     else f", {name} via linked Cove face data" if performer is not None else "")
                             log(f"Selected {role} cell {pane + 1}: video {sid}, source "
                                 f"{clock_time(start)}–{clock_time(start + required)}, song {clock_time(left)}{match}")
                         break

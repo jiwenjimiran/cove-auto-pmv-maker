@@ -71,8 +71,8 @@ const optionHelp = {
   useVerticalVideosOnly: "Only portrait source videos may appear in the three-pane edit. Landscape videos are excluded before planning.",
   selectionMode: "For triple portrait only, choose a random vertical crop, the center crop, or a crop around a detected face. Grid uses whole shots.",
   keepFaceCentered: "Moves a full-height portrait crop horizontally with the chosen face. It never zooms in on the face.",
-  matchSelectedPerformers: "Ensures each Triple portrait face slice includes one of the selected performers linked to that source video. Cove images provide the reference faces.",
-  faceSimilarityThreshold: "Each accepted Triple portrait face sample must reach this SFace cosine similarity to a linked selected performer. 55% is the minimum allowed. This is a model similarity score, not a probability of identity.",
+  matchSelectedPerformers: "Uses linked Cove face detections when they cover the slice. Otherwise compares sampled frames with Cove face covers or performer portraits. Only performers linked to that video qualify.",
+  faceSimilarityThreshold: "For image matching when linked face data is unavailable, sampled faces must reach this SFace cosine similarity. Linked Cove face detections use their stored identity instead. 55% is the minimum; this is not an identity probability.",
   mirrorRepeatedSource: "When the same video occupies both outside panes, use the same moment and mirror the right pane.",
   sampledClipsProgress: "Move sampling through successive 5% sections of each video.",
   minimumTimestampSeconds: "Never sample source footage before this timestamp.",
@@ -664,7 +664,7 @@ function PmvDialog({ context, close }) {
     audioPlayer.current?.pause(); close();
   } catch (e) { setError(e.message); } finally { setBusy(false); } };
   const portraitFaceControls = <fieldset className="pmv-face-picker"><legend>Triple portrait faces to follow</legend>
-    <p>Each accepted portrait slice must show a selected performer linked to that source video. Cove images provide the face reference.</p>
+    <p>Uses linked Cove face data first. If it does not cover the slice, matching uses a Cove face cover or performer portrait. Only performers linked to that video qualify.</p>
     <div className="pmv-grid"><Control label="Select by gender" help="Filters linked performers by Cove metadata. It does not infer gender from video frames.">{id => <select id={id} value={faceGender} onChange={e => setFaceGender(e.target.value)}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans performers</option><option value="all">All performers</option></select>}</Control></div>
     <div className="pmv-face-actions"><button type="button" onClick={() => setFaceIds([...new Set([...(faceIds || []), ...(preview?.performers || []).filter(p => p.hasReference && genderFits(p, faceGender)).map(p => p.id)])])}>Select matching</button><button type="button" onClick={() => setFaceIds([])}>Deselect all</button><small>{faceIds.length} selected</small></div>
     <div className="pmv-face-list">{(preview?.performers || []).filter(person => genderFits(person, faceGender) || faceIds.includes(person.id)).map(person => <button type="button" key={person.id} className={faceIds.includes(person.id) ? "selected" : ""} disabled={!person.hasReference} onClick={() => setFaceIds(current => current.includes(person.id) ? current.filter(id => id !== person.id) : [...current, person.id])} aria-pressed={faceIds.includes(person.id)}>{person.name}{!person.hasReference ? " · no reference image" : ""}</button>)}</div>

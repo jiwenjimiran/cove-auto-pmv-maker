@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.IO.Compression;
 using System.Text.Json;
 using System.Reflection;
 using Cove.PmvMaker;
@@ -21,6 +22,24 @@ pmvExtension.SetStore(new MemoryStore(JsonSerializer.Serialize(new { musicFolder
     defaults = new { colorTreatment = "matched", layout = "grid-full", segmentTagIds = new[] { 10 }, outputCodec = "h264", faceSimilarityThreshold = 0.45 } })));
 pmvExtension.MapEndpoints(app);
 var retryPolls = 0;
+var submissionAttempts = 0;
+string? submissionId = null;
+app.MapPost("/jobs", async (HttpContext context) =>
+{
+    var requestId = context.Request.Headers["X-PMV-Request-Id"].ToString();
+    if (string.IsNullOrWhiteSpace(requestId) || context.Request.Headers.ContentEncoding != "gzip")
+        throw new Exception("PMV submissions need a stable request ID and compressed body.");
+    if (submissionId is not null && submissionId != requestId)
+        throw new Exception("A retry changed its idempotency key.");
+    submissionId = requestId;
+    if (Interlocked.Increment(ref submissionAttempts) == 1) { context.Abort(); return; }
+    using var expanded = new GZipStream(context.Request.Body, CompressionMode.Decompress);
+    using var submittedBody = await JsonDocument.ParseAsync(expanded);
+    if (submittedBody.RootElement.GetProperty("sources").GetArrayLength() != 348
+        || submittedBody.RootElement.GetProperty("padding").GetString()!.Length != 5_000_000)
+        throw new Exception("Companion request did not retain the complete large JSON payload.");
+    await context.Response.WriteAsJsonAsync(new { id = "original-job", state = "queued", progress = 0, message = "Queued" });
+});
 app.MapGet("/jobs/retry-test", async (HttpContext context) =>
 {
     if (Interlocked.Increment(ref retryPolls) == 1) { context.Abort(); return; }
@@ -40,6 +59,15 @@ try
     var recovered = await pollTask;
     if (retryPolls != 2 || recovered.GetProperty("marker").GetString() != "recovered")
         throw new Exception("PMV job polling did not recover from a dropped connection.");
+
+    var submitMethod = typeof(PmvMakerExtension).GetMethod("SubmitJobWithRetryAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    var submittedTask = (Task<CompanionJob>)submitMethod.Invoke(pmvExtension,
+        [new PmvSettings { CompanionMode = "external", CompanionUrl = address, CompanionToken = "test" },
+         new { sources = Enumerable.Range(1, 348).Select(id => new { id }).ToArray(), padding = new string('x', 5_000_000) },
+         NullLogger.Instance, CancellationToken.None])!;
+    var submitted = await submittedTask;
+    if (submissionAttempts != 2 || submitted.Id != "original-job")
+        throw new Exception("A dropped POST response must retry the same PMV submission.");
 
     var bodyFactory = typeof(PmvMakerExtension).GetMethod("JsonBody", BindingFlags.NonPublic | BindingFlags.Static)!
         .MakeGenericMethod(typeof(FolderPickerRequest));

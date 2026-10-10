@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -33,7 +34,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.21";
+    public string Version => "0.1.22";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -199,7 +200,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
             var performers = await db.Performers.AsNoTracking().Where(p => p.Name.Contains(query))
                 .OrderBy(p => p.Name).Take(30).Select(p => new { p.Id, p.Name, p.Gender,
-                    HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && f.CoverBlobId != null && !f.Ignored) })
+                    HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && !f.Ignored && (f.CoverBlobId != null || f.DetectionCount > 0)) })
                 .ToArrayAsync(ctx.RequestAborted);
             return Results.Json(performers, Json);
         }).RequireCovePermission("performers.read");
@@ -396,7 +397,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             var performers = await db.Performers.AsNoTracking()
                 .Where(p => performerIds.Contains(p.Id)).OrderBy(p => p.Name)
                 .Select(p => new { p.Id, p.Name, p.Gender,
-                    HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && f.CoverBlobId != null && !f.Ignored) })
+                    HasReference = p.ImageBlobId != null || p.ImageOverrideBlobId != null || db.Faces.Any(f => f.PerformerId == p.Id && !f.Ignored && (f.CoverBlobId != null || f.DetectionCount > 0)) })
                 .ToArrayAsync(ctx.RequestAborted);
             var modes = EffectiveLayoutModes(options);
             var gridShort = modes.Contains("grid") && result.Videos.Count(video => video.Height <= video.Width) < 4;
@@ -542,21 +543,28 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         try
         {
         var faceMode = NeedsFaceReferences(options);
+        var faceObservations = faceMode
+            ? await LoadFaceObservationsAsync(db, resolved, request.FacePerformerIds, settings, ct)
+            : new Dictionary<int, IReadOnlyList<FaceObservation>>();
         var references = faceMode
             ? await UploadFaceReferencesAsync(db, scope.ServiceProvider.GetRequiredService<IBlobService>(),
                 request.FacePerformerIds, resolved, settings, referenceIds, ct)
             : new List<FaceReference>();
-        if (faceMode && references.Count == 0)
-            throw new InvalidOperationException("No reference face images were found for the selected performers. Choose performers with portraits or Cove face images, or disable performer matching.");
+        if (faceMode && references.Count == 0 && faceObservations.Values.All(rows => rows.Count == 0))
+            throw new InvalidOperationException("No linked Cove face detections or reference images were found for the selected performers. Choose performers with face data or images, or disable performer matching.");
         if (faceMode)
             logger.LogInformation("[PMV] Uploaded {ReferenceCount} face reference images for {PerformerCount} performers; similarity threshold {Threshold:P0}",
                 references.Count, references.Select(row => row.PerformerId).Distinct().Count(), options.FaceSimilarityThreshold);
+        if (faceMode)
+            logger.LogInformation("[PMV] Loaded {DetectionCount} linked Cove face detections across {VideoCount} eligible videos",
+                faceObservations.Values.Sum(rows => rows.Count), faceObservations.Count);
         var payload = new
         {
             sources = resolved.Videos.Select(v => new { v.Id, path = ToHost(v.Path, settings), v.Duration, v.Width, v.Height, v.Fps,
                 tagOnly = v.AllowedSegments is not null,
                 v.StudioId, v.StudioName, v.PerformerIds, v.PerformerNames,
-                segments = v.AllowedSegments ?? v.Segments, allSegments = v.Segments, v.SavedRanges }),
+                segments = v.AllowedSegments ?? v.Segments, allSegments = v.Segments, v.SavedRanges,
+                faceObservations = faceObservations.GetValueOrDefault(v.Id, []) }),
             launchName = resolved.LaunchName,
             launchKind = resolved.LaunchKind,
             audio = await AudioPayloadAsync(request.Audio, settings, db, scope.ServiceProvider.GetRequiredService<IAuthorizationService>(), principal, ct),
@@ -567,11 +575,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             skipSetupChecks = settings.SkipSetupChecks
         };
         progress.Report(0.02, "Submitting edit to Resolve Studio companion");
-        using var post = NewRequest(HttpMethod.Post, settings, "jobs");
-        post.Content = JsonBody(payload);
-        using var response = await _http.SendAsync(post, ct);
-        response.EnsureSuccessStatusCode();
-        var submitted = await response.Content.ReadFromJsonAsync<CompanionJob>(Json, ct) ?? throw new InvalidOperationException("Companion gave no job ID.");
+        var submitted = await SubmitJobWithRetryAsync(settings, payload, logger, ct);
         logger.LogInformation("[PMV {CompanionJobId}] Companion accepted render job", submitted.Id[..Math.Min(8, submitted.Id.Length)]);
         long eventCursor = 0;
         try
@@ -630,6 +634,61 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 try { await _http.SendAsync(delete, CancellationToken.None); } catch { }
             }
         }
+    }
+
+    private static async Task<Dictionary<int, IReadOnlyList<FaceObservation>>> LoadFaceObservationsAsync(
+        CoveContext db, ScopeResult scope, List<int>? selectedIds, PmvSettings settings, CancellationToken ct)
+    {
+        var videos = scope.Videos.ToDictionary(video => video.Id);
+        var allowedIds = scope.Videos.SelectMany(video => video.PerformerIds).ToHashSet();
+        if (selectedIds is not null) allowedIds.IntersectWith(selectedIds);
+        else
+        {
+            var genderIds = await db.Performers.AsNoTracking().Where(p => allowedIds.Contains(p.Id))
+                .Select(p => new { p.Id, p.Gender }).ToArrayAsync(ct);
+            allowedIds.IntersectWith(genderIds.Where(p => settings.DefaultFaceGender switch
+            {
+                "female" => p.Gender == GenderEnum.Female,
+                "male" => p.Gender == GenderEnum.Male,
+                "trans" => p.Gender is GenderEnum.TransgenderFemale or GenderEnum.TransgenderMale,
+                _ => true
+            }).Select(p => p.Id));
+        }
+        if (allowedIds.Count == 0) return [];
+        var faces = await db.Faces.AsNoTracking()
+            .Where(face => !face.Ignored && face.MergedIntoFaceId == null && face.PerformerId.HasValue
+                && allowedIds.Contains(face.PerformerId.Value))
+            .Select(face => new { face.Id, PerformerId = face.PerformerId!.Value }).ToArrayAsync(ct);
+        var performerByFace = faces.ToDictionary(face => (long)face.Id, face => face.PerformerId);
+        if (performerByFace.Count == 0) return [];
+        var faceIds = performerByFace.Keys.ToArray();
+        var results = new Dictionary<int, IReadOnlyList<FaceObservation>>();
+        foreach (var batch in videos.Keys.Chunk(50))
+        {
+            var detections = await db.Detections.AsNoTracking()
+                .Where(d => d.HostType == DetectionHostType.Video && batch.Contains(d.HostId)
+                    && d.SourceKey == "ext:ai.faces" && d.RefKind == "face" && d.RefId.HasValue
+                    && faceIds.Contains(d.RefId.Value) && d.ObservedAtSec.HasValue)
+                .Select(d => new { d.HostId, d.RefId, d.ObservedAtSec, d.FrameWidth, d.X, d.W, d.Score })
+                .ToArrayAsync(ct);
+            foreach (var group in detections.GroupBy(d => d.HostId))
+            {
+                var video = videos[group.Key];
+                var valid = group.Where(d => d.Score > 0 && d.FrameWidth > 0 && d.W > 0
+                    && performerByFace.TryGetValue(d.RefId!.Value, out var performerId)
+                    && video.PerformerIds.Contains(performerId)
+                    && (video.AllowedSegments ?? video.Segments).Any(segment =>
+                        d.ObservedAtSec!.Value >= segment.Start - 2.5 && d.ObservedAtSec.Value <= segment.End + 2.5))
+                    .OrderBy(d => d.ObservedAtSec)
+                    .Take(4000)
+                    .Select(d => new FaceObservation(performerByFace[d.RefId!.Value], d.ObservedAtSec!.Value,
+                        Math.Clamp((d.X + d.W / 2) / d.FrameWidth, 0, 1),
+                        Math.Clamp(d.W / d.FrameWidth, 0, 1), d.Score))
+                    .ToArray();
+                if (valid.Length > 0) results[group.Key] = valid;
+            }
+        }
+        return results;
     }
 
     private async Task<List<FaceReference>> UploadFaceReferencesAsync(CoveContext db, IBlobService blobs,
@@ -869,6 +928,57 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<JsonElement>(Json, ct);
     }
+    private async Task<CompanionJob> SubmitJobWithRetryAsync(PmvSettings settings, object payload,
+        ILogger logger, CancellationToken ct)
+    {
+        // A lost response must not create a second render. The companion stores this
+        // key before replying and returns the original job on retry.
+        var requestId = Guid.NewGuid().ToString("N");
+        var raw = JsonSerializer.SerializeToUtf8Bytes(payload, Json);
+        using var packed = new MemoryStream();
+        using (var compressor = new GZipStream(packed, CompressionLevel.Fastest, leaveOpen: true))
+            compressor.Write(raw);
+        var body = packed.ToArray();
+        logger.LogInformation("[PMV] Submitting {PayloadBytes} bytes to companion ({CompressedBytes} bytes compressed)",
+            raw.Length, body.Length);
+        for (var attempt = 1; ; attempt++)
+        {
+            using var post = NewRequest(HttpMethod.Post, settings, "jobs");
+            post.Headers.Add("X-PMV-Request-Id", requestId);
+            post.Content = new ByteArrayContent(body);
+            post.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            post.Content.Headers.ContentEncoding.Add("gzip");
+            try
+            {
+                using var response = await _http.SendAsync(post, ct);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var detail = await response.Content.ReadAsStringAsync(ct);
+                    throw new InvalidOperationException($"Companion rejected PMV job ({(int)response.StatusCode}): {detail}");
+                }
+                return await response.Content.ReadFromJsonAsync<CompanionJob>(Json, ct)
+                    ?? throw new InvalidOperationException("Companion gave no job ID.");
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested && attempt < 4 &&
+                ex is HttpRequestException { StatusCode: null } or IOException or TaskCanceledException)
+            {
+                var status = settings.CompanionMode == "auto" ? _local?.Status : null;
+                if (status is { Running: false })
+                    throw new InvalidOperationException("The PMV companion stopped before accepting the render. "
+                        + (status.Error ?? "Restart the companion from PMV settings."), ex);
+                logger.LogWarning(ex, "[PMV] Companion submission connection interrupted; retrying request {RequestId} ({Attempt}/4)",
+                    requestId[..8], attempt + 1);
+                await Task.Delay(TimeSpan.FromSeconds(attempt), ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested &&
+                ex is HttpRequestException { StatusCode: null } or IOException or TaskCanceledException)
+            {
+                var recent = settings.CompanionMode == "auto" ? _local?.RecentLogs : null;
+                throw new InvalidOperationException("The PMV companion connection failed during job submission after four attempts. "
+                    + (string.IsNullOrWhiteSpace(recent) ? "Check companion status in PMV settings." : "Companion: " + recent), ex);
+            }
+        }
+    }
     private async Task<JsonElement> CompanionJobGetWithRetryAsync(PmvSettings settings, string jobId, long after,
         ILogger logger, CancellationToken ct)
     {
@@ -902,6 +1012,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         if (!baseUri.IsLoopback && settings.PathMappings.Count == 0) throw new InvalidOperationException("Remote companion requires explicit path mappings.");
         var request = new HttpRequestMessage(method, new Uri(baseUri, path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.CompanionToken);
+        request.Headers.ConnectionClose = true;
         return request;
     }
     public static string ToHost(string path, PmvSettings settings) => Map(path, settings.PathMappings.Select(m => (m.ContainerPrefix, m.HostPrefix)));

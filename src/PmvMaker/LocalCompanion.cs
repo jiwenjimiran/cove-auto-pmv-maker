@@ -40,6 +40,7 @@ public sealed class LocalCompanion(string archivePath) : IAsyncDisposable
             }
         }
     }
+    public string RecentLogs => LastLog();
 
     public (string Url, string Token)? Connection
     {
