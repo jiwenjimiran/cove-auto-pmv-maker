@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -575,7 +576,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 CompanionJob state;
                 do
                 {
-                    state = (await CompanionGetAsync(settings, "jobs/" + submitted.Id + "?after=" + eventCursor, ct)).Deserialize<CompanionJob>(Json)
+                    state = (await CompanionJobGetWithRetryAsync(settings, submitted.Id, eventCursor, logger, ct)).Deserialize<CompanionJob>(Json)
                         ?? throw new InvalidOperationException("Companion job state missing.");
                     foreach (var entry in state.Events ?? [])
                     {
@@ -857,6 +858,33 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         using var response = await _http.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<JsonElement>(Json, ct);
+    }
+    private async Task<JsonElement> CompanionJobGetWithRetryAsync(PmvSettings settings, string jobId, long after,
+        ILogger logger, CancellationToken ct)
+    {
+        var elapsed = Stopwatch.StartNew();
+        var attempts = 0;
+        while (true)
+        {
+            try { return await CompanionGetAsync(settings, "jobs/" + jobId + "?after=" + after, ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested &&
+                (ex is HttpRequestException { StatusCode: null } or IOException or TaskCanceledException))
+            {
+                attempts++;
+                var localStatus = settings.CompanionMode == "auto" ? _local?.Status : null;
+                if (localStatus is { Running: false })
+                    throw new InvalidOperationException("The PMV companion stopped during the render. "
+                        + (localStatus.Error ?? "Restart it from Auto PMV Maker settings and retry."), ex);
+                if (elapsed.Elapsed >= TimeSpan.FromMinutes(2))
+                    throw new InvalidOperationException("Cove lost the PMV companion connection for two minutes while "
+                        + "polling an active render. The companion may still be working; check its status before restarting. "
+                        + ex.Message, ex);
+                if (attempts == 1 || attempts % 5 == 0)
+                    logger.LogWarning(ex, "[PMV {CompanionJobId}] Companion status connection interrupted; retrying ({Attempt}, {ElapsedSeconds:F0}s)",
+                        jobId[..Math.Min(8, jobId.Length)], attempts, elapsed.Elapsed.TotalSeconds);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Min(5, attempts)), ct);
+            }
+        }
     }
     private static HttpRequestMessage NewRequest(HttpMethod method, PmvSettings settings, string path)
     {

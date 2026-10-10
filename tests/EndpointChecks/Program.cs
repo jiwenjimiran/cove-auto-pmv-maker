@@ -6,6 +6,7 @@ using Cove.PmvMaker;
 using Cove.Plugins;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.Logging.Abstractions;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
@@ -19,12 +20,26 @@ var pmvExtension = new PmvMakerExtension();
 pmvExtension.SetStore(new MemoryStore(JsonSerializer.Serialize(new { musicFolder = musicRoot,
     defaults = new { colorTreatment = "matched", layout = "grid-full", fullSelectionMode = "scene", faceSimilarityThreshold = 0.45 } })));
 pmvExtension.MapEndpoints(app);
+var retryPolls = 0;
+app.MapGet("/jobs/retry-test", async (HttpContext context) =>
+{
+    if (Interlocked.Increment(ref retryPolls) == 1) { context.Abort(); return; }
+    await context.Response.WriteAsJsonAsync(new { state = "running", marker = "recovered" });
+});
 await app.StartAsync();
 try
 {
     var address = app.Services.GetRequiredService<IServer>()
         .Features.Get<IServerAddressesFeature>()!.Addresses.Single();
     using var client = new HttpClient();
+
+    var pollMethod = typeof(PmvMakerExtension).GetMethod("CompanionJobGetWithRetryAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    var pollTask = (Task<JsonElement>)pollMethod.Invoke(pmvExtension,
+        [new PmvSettings { CompanionMode = "external", CompanionUrl = address, CompanionToken = "test" },
+         "retry-test", 0L, NullLogger.Instance, CancellationToken.None])!;
+    var recovered = await pollTask;
+    if (retryPolls != 2 || recovered.GetProperty("marker").GetString() != "recovered")
+        throw new Exception("PMV job polling did not recover from a dropped connection.");
 
     var bodyFactory = typeof(PmvMakerExtension).GetMethod("JsonBody", BindingFlags.NonPublic | BindingFlags.Static)!
         .MakeGenericMethod(typeof(FolderPickerRequest));

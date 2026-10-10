@@ -16,14 +16,15 @@ import server
 
 
 class CompanionApiTests(unittest.TestCase):
-    def test_preflight_rejects_listed_but_unusable_av1_before_job(self):
+    def test_preflight_accepts_hardware_av1_when_resolve_rejects_native_codec(self):
         class Project:
-            def GetRenderCodecs(self, _format):
-                return {"AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA"}
+            def GetRenderCodecs(self, format_name):
+                return ({"AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA"} if format_name == "mp4"
+                        else {"Avid DNxHR HQX 10-bit": "DNxHRHQX_10"})
             def GetCurrentRenderFormatAndCodec(self):
                 return {}
-            def SetCurrentRenderFormatAndCodec(self, _format, _codec):
-                return False
+            def SetCurrentRenderFormatAndCodec(self, _format, codec):
+                return codec == "DNxHRHQX_10"
         project = Project()
         deleted = []
         manager = types.SimpleNamespace(
@@ -39,9 +40,9 @@ class CompanionApiTests(unittest.TestCase):
             audio.touch()
             payload = {"sources": [{"path": str(source)}], "audio": {"path": str(audio)},
                        "outputFolder": root, "outputCodec": "av1"}
-            with patch.object(server, "connect", return_value=resolve):
-                with self.assertRaisesRegex(RuntimeError, "rejected every available AV1 encoder"):
-                    server.preflight(payload)
+            with patch.object(server, "connect", return_value=resolve), \
+                    patch("resolve_adapter.ffmpeg_av1_encoder", return_value=("av1_nvenc", ["-preset", "p5"])):
+                self.assertEqual(payload["sources"], server.preflight(payload))
         self.assertEqual(1, len(deleted))
 
     def test_job_diagnostics_have_ordered_cursor_and_bounded_history(self):

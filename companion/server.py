@@ -23,7 +23,7 @@ from tempfile import TemporaryDirectory, gettempdir
 from urllib.parse import parse_qs, urlparse
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_modes, mix_audio, output_stem, prepare_audio, reserve_output
-from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render, select_mp4_codec
+from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render, select_render_profile
 
 JOBS = {}
 LOCK = threading.Lock()
@@ -230,7 +230,7 @@ def preflight(payload):
                 raise RuntimeError("Resolve could not create a temporary project to check the selected MP4 codec")
         previous = current.GetCurrentRenderFormatAndCodec() or {}
         try:
-            select_mp4_codec(current, requested_codec, apply=True)
+            select_render_profile(current, requested_codec)
         finally:
             if temporary_name:
                 manager.CloseProject(current)

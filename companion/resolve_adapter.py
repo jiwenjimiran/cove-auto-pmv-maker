@@ -8,6 +8,10 @@ import re
 import json
 import uuid
 import math
+import shutil
+import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 from engine import layout_modes, option_range, probe, run
@@ -138,7 +142,8 @@ def select_mp4_codec(project, requested, apply=False):
             return ("h264" in combined or "avc" in combined) and "h265" not in combined
         if requested == "h265":
             return "h265" in combined or "hevc" in combined
-        return "av1" in combined
+        return "av1" in combined and any(hardware in combined for hardware in
+                                      ("nvidia", "nvenc", "amd", "amf", "intel", "qsv", "quicksync"))
     candidates = [(label, value) for label, value in available.items() if matches(label, value)]
     if requested == "av1":
         candidates.sort(key=lambda pair: ("8bit" not in re.sub(r"[^a-z0-9]", "", pair[0].lower()), pair[0]))
@@ -155,6 +160,95 @@ def select_mp4_codec(project, requested, apply=False):
         raise RuntimeError(f"Resolve Studio lists {labels[requested]} for MP4, but rejected every available "
                            f"{labels[requested]} encoder on this PC. Choose another render codec in Auto PMV Maker settings.")
     return candidates[0]
+
+
+def ffmpeg_av1_encoder():
+    """Probe actual encoding, since listing an encoder does not mean it can run."""
+    name, args = "av1_nvenc", ["-preset", "p5", "-cq", "20", "-b:v", "0"]
+    try:
+        trial = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+             "color=c=gray:s=640x360:r=30:d=0.2", "-frames:v", "4", "-c:v", name,
+             *args, "-f", "null", "-"], capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"NVIDIA AV1 hardware encoding is unavailable: {exc}") from exc
+    if trial.returncode != 0:
+        raise RuntimeError("NVIDIA AV1 hardware encoding failed: "
+                           + trial.stderr.decode(errors="replace")[-1000:])
+    return name, args
+
+
+def select_render_profile(project, requested):
+    """Prefer native Resolve AV1, then a high-quality Resolve intermediate."""
+    if requested != "av1":
+        label, codec = select_mp4_codec(project, requested, apply=True)
+        return {"format": "mp4", "codec": codec, "label": label, "intermediate": False}
+    try:
+        label, codec = select_mp4_codec(project, "av1", apply=True)
+        return {"format": "mp4", "codec": codec, "label": label, "intermediate": False}
+    except RuntimeError as native_error:
+        encoder, encoder_args = ffmpeg_av1_encoder()
+        mov_codecs = project.GetRenderCodecs("mov") or {}
+        for label, codec in mov_codecs.items():
+            if codec == "DNxHRHQX_10" and project.SetCurrentRenderFormatAndCodec("mov", codec):
+                return {"format": "mov", "codec": codec, "label": label, "intermediate": True,
+                        "encoder": encoder, "encoderArgs": encoder_args}
+        raise RuntimeError(f"{native_error} Resolve also rejected the DNxHR HQX intermediate needed "
+                           "for FFmpeg AV1 encoding.")
+
+
+def encode_av1(intermediate, audio_path, output_path, encoder, encoder_args, cancel, progress):
+    """Encode the Resolve intermediate and publish only a verified AV1 MP4."""
+    duration = float(probe(intermediate)["format"]["duration"])
+    temporary = Path(intermediate).with_name("av1-output.mp4")
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(intermediate),
+            "-i", str(audio_path), "-map", "0:v:0", "-map", "1:a:0", "-c:v", encoder,
+            *encoder_args, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k",
+            "-ar", "48000", "-shortest", "-movflags", "+faststart", "-progress", "pipe:1",
+            "-nostats", str(temporary)]
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    latest = {"seconds": 0.0}
+    def read_progress():
+        for line in process.stdout:
+            if line.startswith("out_time_us=") or line.startswith("out_time_ms="):
+                try:
+                    latest["seconds"] = int(line.split("=", 1)[1]) / 1_000_000
+                except ValueError:
+                    pass
+    reader = threading.Thread(target=read_progress, daemon=True)
+    reader.start()
+    last_percent = -1
+    try:
+        while process.poll() is None:
+            if cancel.is_set():
+                process.kill()
+                raise InterruptedError("AV1 encoding cancelled")
+            percent = min(98, 80 + 18 * latest["seconds"] / max(0.1, duration))
+            if int(percent) > last_percent:
+                last_percent = int(percent)
+                progress(percent, f"Encoding AV1 MP4 with {encoder}: {latest['seconds']:.1f}/{duration:.1f}s")
+            time.sleep(0.25)
+        reader.join(timeout=2)
+        errors = process.stderr.read()
+        if process.returncode:
+            raise RuntimeError(f"FFmpeg AV1 encoding failed ({encoder}): {errors[-2000:]}")
+        streams = probe(temporary)["streams"]
+        video = next((stream for stream in streams if stream["codec_type"] == "video"), None)
+        audio = next((stream for stream in streams if stream["codec_type"] == "audio"), None)
+        if video is None or video.get("codec_name") != "av1" or audio is None or audio.get("codec_name") != "aac":
+            raise RuntimeError("FFmpeg did not produce a playable AV1/AAC MP4")
+        target = Path(output_path)
+        partial = target.with_name(target.name + "." + uuid.uuid4().hex + ".partial")
+        try:
+            shutil.copyfile(temporary, partial)
+            os.replace(partial, target)
+        finally:
+            partial.unlink(missing_ok=True)
+        progress(98.5, "Verified final AV1/AAC MP4")
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
 
 
 def animate_expansion(item, clip, role, width, height, fps):
@@ -216,6 +310,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
     if not project:
         raise RuntimeError("Resolve could not create a temporary project. Open an editable project in a local project library, then retry. The scripting API reports database: " + str(manager.GetCurrentDatabase()))
     job_id = None
+    work_dir = None
     try:
         check(project.SetSettings({"timelineResolutionWidth": str(width)}), "timeline width")
         check(project.SetSettings({"timelineResolutionHeight": str(height)}), "timeline height")
@@ -450,16 +545,24 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             raise RuntimeError("Resolve could not place the final audio mix")
         check(manager.SaveProject(), "SaveProject")
         requested_codec = options.get("outputCodec", "h264")
-        codec_label, codec = select_mp4_codec(project, requested_codec, apply=True)
+        profile = select_render_profile(project, requested_codec)
+        if profile["intermediate"]:
+            work_dir = tempfile.TemporaryDirectory(prefix="pmv-av1-render-")
+            render_path = str(Path(work_dir.name) / "resolve-intermediate.mov")
+            progress(55, f"Resolve rejected native AV1; rendering {profile['label']} before FFmpeg AV1 encoding")
+        else:
+            render_path = output_path
         check(project.SetCurrentRenderMode(1), "single clip render mode")
-        settings = {"SelectAllFrames": True, "TargetDir": str(Path(output_path).parent),
-                    "CustomName": Path(output_path).stem, "ExportVideo": True, "ExportAudio": True,
-                    "FormatWidth": width, "FormatHeight": height, "FrameRate": fps, "AudioCodec": "aac",
-                    "AudioSampleRate": 48000}
+        settings = {"SelectAllFrames": True, "TargetDir": str(Path(render_path).parent),
+                    "CustomName": Path(render_path).stem, "ExportVideo": True,
+                    "ExportAudio": not profile["intermediate"],
+                    "FormatWidth": width, "FormatHeight": height, "FrameRate": fps}
+        if not profile["intermediate"]:
+            settings.update(AudioCodec="aac", AudioSampleRate=48000)
         for key, value in settings.items():
             check(project.SetRenderSettings({key: value}), f"render setting {key}={value!r}")
         job_id = check(project.AddRenderJob(), "AddRenderJob")
-        progress(55, f"Rendering {codec_label} MP4 in Resolve")
+        progress(55, f"Rendering {profile['label']} {'intermediate' if profile['intermediate'] else 'MP4'} in Resolve")
         check(project.StartRendering(job_id), "StartRendering")
         while project.IsRenderingInProgress():
             if cancel.is_set():
@@ -467,27 +570,35 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 raise InterruptedError("Render cancelled")
             status = project.GetRenderJobStatus(job_id) or {}
             percent = float(status.get("CompletionPercentage", 0) or 0)
-            progress(55 + percent * 0.43, f"Resolve render {percent:.0f}%")
+            progress(55 + percent * (0.25 if profile["intermediate"] else 0.43), f"Resolve render {percent:.0f}%")
             time.sleep(1)
         status = project.GetRenderJobStatus(job_id) or {}
         if status.get("JobStatus") not in ("Complete", "Completed"):
             raise RuntimeError("Resolve render failed: " + str(status))
-        if not Path(output_path).is_file() or Path(output_path).stat().st_size == 0:
-            raise RuntimeError("Resolve reported completion but produced no MP4")
+        if not Path(render_path).is_file() or Path(render_path).stat().st_size == 0:
+            raise RuntimeError("Resolve reported completion but produced no video")
+        if profile["intermediate"]:
+            progress(80, f"Encoding final AV1 MP4 with {profile['encoder']}")
+            encode_av1(render_path, audio_path, output_path, profile["encoder"],
+                       profile["encoderArgs"], cancel, progress)
         video_stream = next((stream for stream in probe(output_path)["streams"]
                              if stream["codec_type"] == "video"), None)
         expected_codec = {"h264": "h264", "h265": "hevc", "av1": "av1"}[requested_codec]
         if video_stream is None or video_stream.get("codec_name") != expected_codec:
             raise RuntimeError(f"Resolve rendered {video_stream.get('codec_name') if video_stream else 'no video'} "
-                               f"instead of requested {codec_label}")
+                               f"instead of requested {requested_codec.upper()}")
         if options.get("saveProject"):
             target = Path(project_folder or Path(output_path).parent)
             target.mkdir(parents=True, exist_ok=True)
             check(manager.ExportProject(project_name, str(target / (Path(output_path).stem + ".drp"))), "ExportProject")
         return status
     finally:
-        if job_id:
-            project.DeleteRenderJob(job_id)
-        check(manager.CloseProject(project), "CloseProject")
-        if project_name in (manager.GetProjectListInCurrentFolder() or []):
-            check(manager.DeleteProject(project_name), "DeleteProject")
+        try:
+            if job_id:
+                project.DeleteRenderJob(job_id)
+            check(manager.CloseProject(project), "CloseProject")
+            if project_name in (manager.GetProjectListInCurrentFolder() or []):
+                check(manager.DeleteProject(project_name), "DeleteProject")
+        finally:
+            if work_dir is not None:
+                work_dir.cleanup()

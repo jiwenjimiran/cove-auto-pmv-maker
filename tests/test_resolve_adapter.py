@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
-from resolve_adapter import select_mp4_codec, set_item_property, source_frame_range
+from resolve_adapter import ffmpeg_av1_encoder, select_mp4_codec, select_render_profile, set_item_property, source_frame_range
 
 
 class TimelinePropertyTests(unittest.TestCase):
@@ -85,6 +85,32 @@ class TimelinePropertyTests(unittest.TestCase):
             GetRenderCodecs=lambda _format: {"AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA"},
             SetCurrentRenderFormatAndCodec=lambda _format, _codec: False)
         with self.assertRaisesRegex(RuntimeError, "lists AV1.*rejected every available AV1 encoder"):
+            select_mp4_codec(project, "av1", apply=True)
+
+    def test_rejected_resolve_av1_uses_hardware_encoder_and_dnxhr(self):
+        class Project:
+            def GetRenderCodecs(self, format_name):
+                return ({"AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA"} if format_name == "mp4"
+                        else {"Avid DNxHR HQX 10-bit": "DNxHRHQX_10"})
+            def SetCurrentRenderFormatAndCodec(self, _format, codec):
+                return codec == "DNxHRHQX_10"
+        with patch("resolve_adapter.ffmpeg_av1_encoder", return_value=("av1_nvenc", ["-preset", "p5"])):
+            profile = select_render_profile(Project(), "av1")
+        self.assertTrue(profile["intermediate"])
+        self.assertEqual("mov", profile["format"])
+        self.assertEqual("av1_nvenc", profile["encoder"])
+
+    def test_av1_probe_never_chooses_a_cpu_encoder(self):
+        trial = SimpleNamespace(returncode=1, stderr=b"NVIDIA encoder unavailable")
+        with patch("resolve_adapter.subprocess.run", return_value=trial) as run:
+            with self.assertRaisesRegex(RuntimeError, "NVIDIA AV1 hardware encoding failed"):
+                ffmpeg_av1_encoder()
+        self.assertIn("av1_nvenc", run.call_args.args[0])
+        self.assertNotIn("libsvtav1", run.call_args.args[0])
+
+    def test_resolve_software_av1_is_not_selected(self):
+        project = SimpleNamespace(GetRenderCodecs=lambda _format: {"AV1 software": "AV1_CPU"})
+        with self.assertRaisesRegex(RuntimeError, "does not offer AV1"):
             select_mp4_codec(project, "av1", apply=True)
 
 

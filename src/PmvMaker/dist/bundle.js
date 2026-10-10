@@ -103,7 +103,7 @@ var optionHelp = {
   songTrimStart: "Optional starting point in the backing song, in seconds. Leave blank to start at the beginning.",
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
   outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
-  outputCodec: "Render an MP4 with H.264, H.265, or AV1. Available encoders depend on this PC's Resolve Studio and graphics hardware; Create checks the choice before queueing.",
+  outputCodec: "Render an MP4 with H.264, H.265, or AV1. AV1 uses hardware encoding only. If Resolve rejects direct AV1, an NVIDIA encoder converts a temporary high-quality Resolve render. Create checks availability before queueing.",
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
   colorTreatment: "None leaves source colors alone. Match brightness samples the first two seconds of each used video. Warm and Cool apply subtle color shifts.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
