@@ -313,7 +313,7 @@ def do_job(job_id, payload):
                 used_video_ids = sorted({c.video_id for c in clips})
                 used_segment_ids = sorted({int(segment["id"]) for clip in clips for source in sources
                                            if int(source["id"]) == clip.video_id
-                                           for segment in source.get("allSegments") or source.get("segments") or []
+                                           for segment in source.get("segments") or []
                                            if clip.source_start < float(segment["end"])
                                            and clip.source_start + clip.duration > float(segment["start"])})
                 matched_performer_ids = sorted({c.matched_performer_id for c in clips if c.matched_performer_id is not None})

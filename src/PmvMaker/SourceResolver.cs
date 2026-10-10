@@ -4,11 +4,13 @@ using Cove.Core.Entities;
 using Cove.Core.Auth;
 using Cove.Core.Interfaces;
 using Cove.Data;
+using Cove.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace Cove.PmvMaker;
 
-public sealed class SourceResolver(CoveContext db, IVideoRepository videoRepository, IAuthorizationService authorization)
+public sealed class SourceResolver(CoveContext db, IVideoRepository videoRepository, IAuthorizationService authorization,
+    SegmentSpanResolver spanResolver)
 {
     private static readonly JsonSerializerOptions FilterJson = new(JsonSerializerDefaults.Web)
     {
@@ -99,9 +101,17 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
         var rows = await db.Videos.AsNoTracking().Where(v => videoIds.Contains(v.Id))
             .Include(v => v.Files).Include(v => v.Studio).Include(v => v.VideoPerformers).ThenInclude(x => x.Performer)
             .AsSplitQuery().ToListAsync(ct);
-        var segments = await db.Segments.AsNoTracking().Where(s => s.HostType == SegmentHostType.Video && videoIds.Contains(s.HostId))
-            .Include(s => s.Tag).ToListAsync(ct);
-        var byVideo = segments.GroupBy(s => s.HostId).ToDictionary(g => g.Key, g => g.ToList());
+        // Cove's Segments view uses resolved spans, not the underlying raw rows.
+        // Resolve through the same display profile so hidden, short and merged ranges
+        // have exactly the boundaries users see in Cove.
+        // The job worker may have no ambient HTTP principal. Resolve from the
+        // authorized request principal so preview and render use one profile.
+        var profileId = (await spanResolver.EnsureDefaultProfileAsync(principal?.UserId, ct)).Id;
+        var byVideo = new Dictionary<int, IReadOnlyList<Cove.Core.DTOs.ResolvedSpan>>();
+        foreach (var batch in videoIds.Chunk(100))
+            foreach (var (videoId, spans) in await spanResolver.ResolveVideosBatchAsync(batch, profileId, ct))
+                byVideo[videoId] = spans;
+        var nextSpanId = 0;
         var result = new List<SourceVideo>();
         var exclusions = new List<string>();
         foreach (var video in rows)
@@ -123,28 +133,23 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
                 exclusions.Add($"Video {video.Id}: missing media {file.Path}");
                 continue;
             }
-            var ranges = byVideo.GetValueOrDefault(video.Id, [])
-                .Where(s => !s.EndSec.HasValue || s.EndSec.Value > s.StartSec)
-                .Select(s => new SourceSegment(s.Id, Math.Max(0, s.StartSec), Math.Min(file.Duration, s.EndSec ?? file.Duration), s.TagId, s.Tag?.Name))
-                .Where(s => s.End > s.Start).ToArray();
-            IReadOnlyList<SourceSegment>? allowedRanges = kind switch
+            var spans = byVideo.GetValueOrDefault(video.Id, []);
+            var resolvedRanges = FullSegmentRanges.Build(spans, file.Duration, ref nextSpanId);
+            var ranges = resolvedRanges.Select(row => row.Source).ToArray();
+            var sourceSpans = resolvedRanges.ToDictionary(row => row.Source.Id, row => row.Span);
+            IReadOnlyList<SourceSegment> scopedRanges = kind switch
             {
                 "tag" => ranges.Where(s => s.TagId.HasValue && ids.Contains(s.TagId.Value)).ToArray(),
-                "segment" => ranges.Where(s => ids.Contains(s.Id)).ToArray(),
-                _ => null
+                // Current Cove extension actions pass raw IDs from the Raw segments
+                // view. Map them to their full displayed spans before editing.
+                "segment" => ranges.Where(s => sourceSpans[s.Id].SegmentIds.Any(ids.Contains)).ToArray(),
+                _ => ranges
             };
-            if (selectedTagIds.Length > 0)
+            var allowedRanges = SegmentSelection.Apply(scopedRanges, ranges,
+                options?.SegmentMode ?? "exclude", selectedTagIds);
+            if (allowedRanges.Count == 0)
             {
-                var tagged = ranges.Where(s => s.TagId.HasValue && selectedTagIds.Contains(s.TagId.Value)).ToArray();
-                allowedRanges = allowedRanges is null ? tagged : allowedRanges
-                    .SelectMany(selected => tagged.Select(taggedRange =>
-                        new SourceSegment(selected.Id, Math.Max(selected.Start, taggedRange.Start),
-                            Math.Min(selected.End, taggedRange.End), selected.TagId, selected.TagName)))
-                    .Where(s => s.End > s.Start).ToArray();
-            }
-            if (allowedRanges is { Count: 0 })
-            {
-                exclusions.Add($"Video {video.Id}: no matching timed segment range");
+                exclusions.Add($"Video {video.Id}: no permitted timed segment range");
                 continue;
             }
             var savedRanges = video.ClipStartSec.HasValue && video.ClipEndSec.HasValue && video.ClipEndSec > video.ClipStartSec
@@ -173,6 +178,52 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
         }
         return await db.Videos.AsNoTracking().Where(v => v.StudioId.HasValue && selected.Contains(v.StudioId.Value))
             .Select(v => v.Id).ToArrayAsync(ct);
+    }
+}
+
+public static class FullSegmentRanges
+{
+    public static IReadOnlyList<(SourceSegment Source, Cove.Core.DTOs.ResolvedSpan Span)> Build(
+        IReadOnlyList<Cove.Core.DTOs.ResolvedSpan> spans, double duration, ref int nextId)
+    {
+        var result = new List<(SourceSegment, Cove.Core.DTOs.ResolvedSpan)>();
+        foreach (var span in spans)
+        {
+            if (span.CollapsedToInstant || span.EndSec <= span.StartSec) continue;
+            var start = Math.Max(0, span.StartSec);
+            var end = Math.Min(duration, span.EndSec);
+            if (end <= start) continue;
+            result.Add((new SourceSegment(--nextId, start, end, span.TagId, span.TagName), span));
+        }
+        return result;
+    }
+}
+
+public static class SegmentSelection
+{
+    public static IReadOnlyList<SourceSegment> Apply(IReadOnlyList<SourceSegment> scoped,
+        IReadOnlyList<SourceSegment> all, string mode, IReadOnlyCollection<int> selectedTagIds)
+    {
+        if (mode is not ("include" or "exclude")) throw new ArgumentException("Choose Include or Exclude for segments.");
+        if (mode == "include")
+            return scoped.Where(s => s.TagId.HasValue && selectedTagIds.Contains(s.TagId.Value)).ToArray();
+        var excluded = all.Where(s => s.TagId.HasValue && selectedTagIds.Contains(s.TagId.Value))
+            .OrderBy(s => s.Start).ToArray();
+        var result = new List<SourceSegment>();
+        foreach (var segment in scoped.Where(s => !s.TagId.HasValue || !selectedTagIds.Contains(s.TagId.Value)))
+        {
+            var cursor = segment.Start;
+            foreach (var blocked in excluded)
+            {
+                if (blocked.End <= cursor || blocked.Start >= segment.End) continue;
+                if (blocked.Start > cursor)
+                    result.Add(segment with { Start = cursor, End = Math.Min(blocked.Start, segment.End) });
+                cursor = Math.Max(cursor, blocked.End);
+                if (cursor >= segment.End) break;
+            }
+            if (cursor < segment.End) result.Add(segment with { Start = cursor });
+        }
+        return result.Where(s => s.End - s.Start >= 0.75).ToArray();
     }
 }
 

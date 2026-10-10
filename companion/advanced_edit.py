@@ -71,7 +71,7 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     eligible = [s for s in sources if cursors[int(s["id"])].ranges]
     if not eligible:
         raise ValueError("Timestamp bounds leave no usable source ranges")
-    selection = (options.get("fullSelectionMode", "face") if panes == 1 else
+    selection = ("scene" if panes == 1 else
                  options.get("selectionMode", "face") if not options.get("useVerticalVideosOnly") else "center")
     matcher = None
     if selection == "face":
@@ -141,7 +141,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                         return ((), None, None)
                     return matcher.analyze_match(source["path"], start, span, pane_aspect,
                                                  bool(options.get("keepFaceCentered", True)), cancel,
-                                                 (lambda reason: rejection_counts.update((reason,))) if log else None)
+                                                 (lambda reason: rejection_counts.update((reason,))) if log else None,
+                                                 allowed_performer_ids=source.get("performerIds") or [])
                 started = time.monotonic()
                 window_count = 0
                 last_window_log = 0.0

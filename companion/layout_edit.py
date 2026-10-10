@@ -98,9 +98,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     output_width, output_height, _ = choose_format(eligible, layout, options)
     slice_face = ("three-pane" in modes and not options.get("useVerticalVideosOnly")
                   and options.get("selectionMode", "face") == "face")
-    full_face = "full-screen" in modes and options.get("fullSelectionMode", "face") == "face"
     matcher = None
-    if slice_face or full_face:
+    if slice_face:
         from face_analysis import FaceAnalyzer
         matcher = FaceAnalyzer(references=references if options.get("matchSelectedPerformers", True) else None,
                                threshold=float(options.get("faceSimilarityThreshold", 0.55)))
@@ -125,8 +124,6 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
         raise ValueError("Song needs more phrase boundaries to show every selected layout")
     if log:
         log("Layout modes: " + ", ".join(modes) + "; phrase sequence: " + " → ".join(sequence))
-        if "full-screen" in modes and options.get("fullSelectionMode", "face") == "scene":
-            log("Full-screen Scene selection does not match performer faces; choose Face match to require it")
     edges = [0.0, *boundaries, duration]
     maximum = max(0.5, float(options.get("maxClipSeconds", 5)))
     minimum = min(maximum, max(0.25, float(options.get("minClipSeconds", 1))))
@@ -175,7 +172,7 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                     continue
                 future = next((at for at in times[event_index + 1:] if pane in events.get(at, ())), phase_end)
                 required = min(maximum, max(minimum, future - left))
-                selection = (options.get("fullSelectionMode", "face") if role == "full-screen"
+                selection = ("scene" if role == "full-screen"
                              else options.get("selectionMode", "face") if role == "three-pane"
                              and not options.get("useVerticalVideosOnly") else "center")
                 aspect = output_width / output_height if role != "three-pane" else output_width / (3 * output_height)
@@ -196,7 +193,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                         evidence = ((), None, None)
                         if selection == "face":
                             evidence = matcher.analyze_match(previous["source"]["path"], start, required, aspect,
-                                                             bool(options.get("keepFaceCentered", True)), cancel)
+                                                             bool(options.get("keepFaceCentered", True)), cancel,
+                                                             allowed_performer_ids=previous["source"].get("performerIds") or [])
                             if not evidence:
                                 continue
                         track, performer, similarity = evidence
@@ -230,7 +228,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                                 return ((), None, None)
                             return matcher.analyze_match(source["path"], start, span, aspect,
                                                          bool(options.get("keepFaceCentered", True)), cancel,
-                                                         lambda reason: rejection_counts.update((reason,)))
+                                                         lambda reason: rejection_counts.update((reason,)),
+                                                         allowed_performer_ids=source.get("performerIds") or [])
                         if progress:
                             progress(25 + 14 * left / duration,
                                      f"Choosing {role} cell {pane + 1}/{count}: video {sid}, song {left:.1f}s")

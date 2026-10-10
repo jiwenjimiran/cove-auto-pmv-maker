@@ -504,6 +504,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.pmv-track-duration {
+  flex: none;
+  min-width: 38px;
+  text-align: right;
+  color: var(--pmv-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .pmv-dialog .pmv-track-play {
   display: grid;
   place-items: center;
@@ -755,6 +763,47 @@
 }
 .pmv-segment-picker {
   margin: 1rem 0;
+}
+.pmv-segment-section {
+  margin: 1rem 0;
+  padding: 14px;
+  border: 1px solid var(--pmv-border);
+  border-radius: 10px;
+  background: var(--pmv-surface);
+}
+.pmv-segment-section .pmv-form-heading {
+  margin-top: 0;
+}
+.pmv-segment-modes {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--pmv-border);
+  border-radius: 9px;
+  background: var(--pmv-card);
+}
+.pmv-dialog .pmv-segment-modes button,
+.pmv-settings .pmv-segment-modes button {
+  min-width: 90px;
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pmv-muted);
+  font-weight: 600;
+}
+.pmv-dialog .pmv-segment-modes button.is-active,
+.pmv-settings .pmv-segment-modes button.is-active {
+  background: var(--pmv-accent);
+  color: #fff;
+}
+.pmv-segment-section .pmv-segment-picker {
+  margin: .8rem 0 0;
+}
+.pmv-segment-required {
+  margin: .65rem 0 0;
+  color: #ffb55c;
+  font-size: 12px;
 }
 .pmv-segment-picker p {
   margin: .4rem 0 .8rem;

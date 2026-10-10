@@ -544,7 +544,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         if not result:
             raise RuntimeError("Resolve could not place the final audio mix")
         check(manager.SaveProject(), "SaveProject")
-        requested_codec = options.get("outputCodec", "h264")
+        requested_codec = options.get("outputCodec", "av1")
         profile = select_render_profile(project, requested_codec)
         if profile["intermediate"]:
             work_dir = tempfile.TemporaryDirectory(prefix="pmv-av1-render-")

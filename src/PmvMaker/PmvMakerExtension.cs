@@ -495,10 +495,12 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             return "Choose each supported PMV layout mode at most once.";
         if (options.OutputCodec is not ("h264" or "h265" or "av1"))
             return "Choose H.264, H.265, or AV1 for the MP4 render.";
-        if (options.FullSelectionMode is not ("scene" or "face"))
-            return "Full-screen selection must be Scene or Face match.";
+        if (options.SegmentMode is not ("include" or "exclude"))
+            return "Choose Include or Exclude for segments.";
         if (options.SegmentTagIds is null || options.SegmentTagIds.Length > 100 || options.SegmentTagIds.Any(id => id <= 0))
             return "Segment list must contain at most 100 valid tags.";
+        if (options.SegmentMode == "include" && options.SegmentTagIds.Length == 0)
+            return "Include mode needs at least one segment tag.";
         if (options.FaceSimilarityThreshold is < 0.55 or > 0.8 || !double.IsFinite(options.FaceSimilarityThreshold))
             return "Performer face match minimum must be between 55% and 80% SFace similarity.";
         if (options.MinimumTimestampSeconds < 0 || options.EndBufferSeconds < 0
@@ -533,10 +535,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var activeModes = EffectiveLayoutModes(options);
         var portraitSelection = activeModes.Contains("three-pane") && !options.UseVerticalVideosOnly
             ? options.SelectionMode : "inactive";
-        var fullSelection = activeModes.Contains("full-screen") ? options.FullSelectionMode : "inactive";
-        logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; modes {Modes}, portrait slice {PortraitSelection}, full-screen {FullSelection}, audio {AudioKind}",
-            resolved.Videos.Count, resolved.Exclusions.Count, string.Join(",", activeModes), portraitSelection,
-            fullSelection, request.Audio.Kind);
+        logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; modes {Modes}, segments {SegmentMode} ({SegmentTagCount} tags), portrait slice {PortraitSelection}, audio {AudioKind}",
+            resolved.Videos.Count, resolved.Exclusions.Count, string.Join(",", activeModes), options.SegmentMode,
+            options.SegmentTagIds.Length, portraitSelection, request.Audio.Kind);
         var referenceIds = new List<string>();
         try
         {
@@ -634,7 +635,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private async Task<List<FaceReference>> UploadFaceReferencesAsync(CoveContext db, IBlobService blobs,
         List<int>? selectedIds, ScopeResult scope, PmvSettings settings, List<string> uploaded, CancellationToken ct)
     {
-        var ids = selectedIds?.Distinct().ToArray() ?? scope.Videos.SelectMany(v => v.PerformerIds).Distinct().ToArray();
+        var linkedIds = scope.Videos.SelectMany(v => v.PerformerIds).ToHashSet();
+        var ids = selectedIds?.Where(linkedIds.Contains).Distinct().ToArray() ?? linkedIds.ToArray();
         if (ids.Length == 0) return [];
         var performers = await db.Performers.AsNoTracking().Where(p => ids.Contains(p.Id))
             .Select(p => new { p.Id, p.Name, p.Gender, p.ImageBlobId, p.ImageOverrideBlobId }).ToArrayAsync(ct);
@@ -717,7 +719,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 ? job.MatchedPerformerIds ?? [] : used.SelectMany(v => v.PerformerIds).Distinct()))
                 db.Set<VideoPerformer>().Add(new VideoPerformer { VideoId = videoId, PerformerId = id });
         if (options.KeepTags)
-            foreach (var id in used.SelectMany(v => v.Segments).Where(s => job.UsedSegmentIds?.Contains(s.Id) == true)
+            foreach (var id in used.SelectMany(v => v.AllowedSegments ?? v.Segments).Where(s => job.UsedSegmentIds?.Contains(s.Id) == true)
                 .Where(s => s.TagId.HasValue).Select(s => s.TagId!.Value).Distinct())
                 tagIds.Add(id);
         foreach (var name in new[] { options.AddPmvTag ? "PMV" : null, options.AddAutoPmvTag ? "Auto_PMV" : null }.OfType<string>())
@@ -772,8 +774,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var modes = EffectiveLayoutModes(options);
         var multiFace = options.SelectionMode == "face" && modes.Contains("three-pane")
             && !options.UseVerticalVideosOnly;
-        var fullFace = modes.Contains("full-screen") && options.FullSelectionMode == "face";
-        return options.MatchSelectedPerformers && (multiFace || fullFace);
+        return options.MatchSelectedPerformers && multiFace;
     }
 
     private static string[] EffectiveLayoutModes(PmvOptions options)
@@ -822,10 +823,14 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 && settings.Defaults.SelectionMode == "center")
                 settings.Defaults.SelectionMode = "face";
             settings.FaceDefaultsVersion = 1;
-            if (!document.RootElement.TryGetProperty("fullFaceDefaultsVersion", out _)
-                && settings.Defaults.FullSelectionMode == "scene")
-                settings.Defaults.FullSelectionMode = "face";
-            settings.FullFaceDefaultsVersion = 1;
+            if (document.RootElement.TryGetProperty("defaults", out var savedDefaults)
+                && !savedDefaults.TryGetProperty("segmentMode", out _)
+                && settings.Defaults.SegmentTagIds is { Length: > 0 })
+                settings.Defaults.SegmentMode = "include";
+            if (!document.RootElement.TryGetProperty("codecDefaultsVersion", out _)
+                && settings.Defaults.OutputCodec == "h264")
+                settings.Defaults.OutputCodec = "av1";
+            settings.CodecDefaultsVersion = 1;
             if (!document.RootElement.TryGetProperty("companionMode", out _))
                 settings.CompanionMode = LocalCompanion.IsSupported
                     && settings.PathMappings.Count == 0

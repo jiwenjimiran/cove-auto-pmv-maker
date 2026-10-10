@@ -19,7 +19,7 @@ def source(ident, portrait=False, segments=None):
 
 BEATS = BeatGrid([float(i) for i in range(33)], bars=tuple(range(0, 32, 4)),
                  phrases=(16, 24), meter=4)
-OPTIONS = {"selectionMode": "center", "fullSelectionMode": "scene", "maxClipSeconds": 6,
+OPTIONS = {"selectionMode": "center", "maxClipSeconds": 6,
            "minClipSeconds": 1, "sampledClipsProgress": True, "rotatedClipLengthSeconds": 60,
            "cycleLongerClipIntoSegments": True,
            "transitionFamilies": ["cut"]}
@@ -63,7 +63,7 @@ class LayoutEditTests(unittest.TestCase):
         with patch("face_analysis.FaceAnalyzer") as analyzer:
             clips = self.plan([source(i) for i in range(1, 6)], "full-screen",
                               layoutModes=["grid", "full-screen"], selectionMode="face",
-                              fullSelectionMode="scene")
+                              fullSelectionMode="face")
         analyzer.assert_not_called()
         self.assertEqual({"grid", "full-screen"}, {clip.layout_role for clip in clips})
 
@@ -95,6 +95,19 @@ class LayoutEditTests(unittest.TestCase):
     def test_performer_match_threshold_never_below_fifty_five_percent(self):
         self.assertEqual(0.55, FaceAnalyzer(threshold=0.45).threshold)
         self.assertEqual(0.7, FaceAnalyzer(threshold=0.7).threshold)
+
+    def test_performer_match_rejects_unlinked_faces_before_decoding_video(self):
+        matcher = FaceAnalyzer()
+        matcher.recognizer = object()
+        matcher.reference_ids = [42]
+        matcher.reference_vectors = __import__("numpy").ones((1, 128), dtype="float32")
+        reasons = []
+        self.assertIsNone(matcher.analyze_match("missing.mp4", 0, 2, 0.5, True,
+                                                rejection=reasons.append, allowed_performer_ids=[]))
+        self.assertEqual(["video has no linked performer to match"], reasons)
+        self.assertIsNone(matcher.analyze_match("missing.mp4", 0, 2, 0.5, True,
+                                                rejection=reasons.append, allowed_performer_ids=[99]))
+        self.assertIn("linked performers have no selected reference face", reasons)
 
     def test_segment_intervals_limit_all_selected_source_time(self):
         segments = [{"id": 1, "start": 40, "end": 100}]

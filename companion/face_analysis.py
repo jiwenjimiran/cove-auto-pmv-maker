@@ -26,6 +26,7 @@ class FaceAnalyzer:
         self.references = {}
         self.reference_vectors = None
         self.reference_ids = []
+        self._allowed_cache = {}
         self.recognizer = None
         self.threshold = max(0.55, float(threshold))
         if references is not None:
@@ -51,7 +52,8 @@ class FaceAnalyzer:
                 vectors = np.vstack([feature.reshape(-1) for features in self.references.values() for feature in features])
                 self.reference_vectors = vectors / np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-8)
 
-    def analyze_match(self, path, start, duration, pane_aspect, keep_centered, cancel=None, rejection=None):
+    def analyze_match(self, path, start, duration, pane_aspect, keep_centered, cancel=None, rejection=None,
+                      allowed_performer_ids=None):
         """Follow a selected identity through brief occlusion, without zooming."""
         def reject(reason):
             if rejection:
@@ -61,6 +63,21 @@ class FaceAnalyzer:
         if self.recognizer is None:
             track = self.analyze(path, start, duration, pane_aspect, keep_centered, cancel)
             return (track, None, None) if track is not None else reject("no continuous detectable face")
+        allowed = frozenset(int(value) for value in (allowed_performer_ids or ()))
+        if allowed_performer_ids is not None and not allowed:
+            return reject("video has no linked performer to match")
+        if allowed_performer_ids is None:
+            reference_vectors, reference_ids = self.reference_vectors, self.reference_ids
+        else:
+            if allowed not in self._allowed_cache:
+                indices = [index for index, performer_id in enumerate(self.reference_ids)
+                           if performer_id in allowed]
+                self._allowed_cache[allowed] = (
+                    self.reference_vectors[indices] if indices else None,
+                    [self.reference_ids[index] for index in indices])
+            reference_vectors, reference_ids = self._allowed_cache[allowed]
+            if reference_vectors is None:
+                return reject("linked performers have no selected reference face")
         cv2 = self.cv2
         capture = cv2.VideoCapture(str(path))
         if not capture.isOpened():
@@ -96,11 +113,11 @@ class FaceAnalyzer:
                     import numpy as np
                     vector = feature.reshape(-1)
                     vector /= max(float(np.linalg.norm(vector)), 1e-8)
-                    similarities = self.reference_vectors @ vector
+                    similarities = reference_vectors @ vector
                     best = int(np.argmax(similarities))
                     similarity = float(similarities[best])
                     if similarity >= self.threshold:
-                        candidates.append((similarity, self.reference_ids[best],
+                        candidates.append((similarity, reference_ids[best],
                                            clamp((x + face_width / 2) / width, 0, 1),
                                            face_width / width, crop_width))
                 if candidates:
