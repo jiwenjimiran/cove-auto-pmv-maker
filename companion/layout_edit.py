@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections import Counter
 from dataclasses import replace
 
 from advanced_edit import clock_time
@@ -95,8 +96,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     if "three-pane" in modes and not portrait_pool:
         raise ValueError("No portrait sources are eligible for the three-pane phase")
     output_width, output_height, _ = choose_format(eligible, layout, options)
-    slice_face = options.get("selectionMode", "face") == "face" and (
-        "grid" in modes or "three-pane" in modes and not options.get("useVerticalVideosOnly"))
+    slice_face = ("three-pane" in modes and not options.get("useVerticalVideosOnly")
+                  and options.get("selectionMode", "face") == "face")
     full_face = "full-screen" in modes and options.get("fullSelectionMode", "face") == "face"
     matcher = None
     if slice_face or full_face:
@@ -175,8 +176,8 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                 future = next((at for at in times[event_index + 1:] if pane in events.get(at, ())), phase_end)
                 required = min(maximum, max(minimum, future - left))
                 selection = (options.get("fullSelectionMode", "face") if role == "full-screen"
-                             else "center" if role == "three-pane" and options.get("useVerticalVideosOnly")
-                             else options.get("selectionMode", "face"))
+                             else options.get("selectionMode", "face") if role == "three-pane"
+                             and not options.get("useVerticalVideosOnly") else "center")
                 aspect = output_width / output_height if role != "three-pane" else output_width / (3 * output_height)
                 chosen = None
                 # An expanded clip starts at the exact next source frame of its visible cell.
@@ -223,19 +224,28 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                                 for other_pane, state in enumerate(states)):
                             continue
                         started = time.monotonic()
+                        rejection_counts = Counter()
                         def accept(start, span):
                             if selection != "face":
                                 return ((), None, None)
                             return matcher.analyze_match(source["path"], start, span, aspect,
-                                                         bool(options.get("keepFaceCentered", True)), cancel)
+                                                         bool(options.get("keepFaceCentered", True)), cancel,
+                                                         lambda reason: rejection_counts.update((reason,)))
                         if progress:
                             progress(25 + 14 * left / duration,
                                      f"Choosing {role} cell {pane + 1}/{count}: video {sid}, song {left:.1f}s")
-                        found = cursors[sid].next(required, accept)
+                        found = cursors[sid].next(required, accept, max_windows=3 if selection == "face" else 1,
+                                                  max_checks=6 if selection == "face" else None,
+                                                  on_window_error=(lambda start, span, exc:
+                                                      log(f"Source scan failed for video {sid}, source "
+                                                          f"{clock_time(start)}–{clock_time(start + span)}: {exc}"))
+                                                  if log else None)
                         if not found:
                             if log:
+                                reasons = ", ".join(f"{reason} ({count})" for reason, count in rejection_counts.most_common(3))
                                 log(f"Rejected video {sid} for {role} cell {pane + 1} at {clock_time(left)} "
-                                    f"after {time.monotonic() - started:.1f}s")
+                                    f"after {time.monotonic() - started:.1f}s"
+                                    + (f"; face checks: {reasons}" if reasons else ""))
                             continue
                         start, segment, evidence = found
                         track, performer, similarity = evidence

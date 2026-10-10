@@ -69,7 +69,7 @@ const stylePresets = {
 const optionHelp = {
   layoutModes: "Select any combination. Each selected mode appears in the song, changing at phrase boundaries. With none selected, the edit uses Full screen.",
   useVerticalVideosOnly: "Only portrait source videos may appear in the three-pane edit. Landscape videos are excluded before planning.",
-  selectionMode: "For landscape footage, choose a random vertical crop, the center crop, or a crop around a detected face.",
+  selectionMode: "For triple portrait only, choose a random vertical crop, the center crop, or a crop around a detected face. Grid uses whole shots.",
   fullSelectionMode: "Scene uses a usable shot. Face match also requires a selected performer's face throughout the full-screen shot.",
   keepFaceCentered: "Moves a full-height portrait crop horizontally with the chosen face. It never zooms in on the face.",
   matchSelectedPerformers: "Matches detected faces against the selected performers' Cove images. A range without a confident match is skipped.",
@@ -224,8 +224,8 @@ function selectedModes(options) {
 
 function needsFaceReferences(options) {
   const modes = selectedModes(options);
-  const sliceMode = options.selectionMode === "face" && (modes.includes("grid")
-    || (modes.includes("three-pane") && !options.useVerticalVideosOnly));
+  const sliceMode = options.selectionMode === "face" && modes.includes("three-pane")
+    && !options.useVerticalVideosOnly;
   const fullMode = modes.includes("full-screen") && options.fullSelectionMode === "face";
   return options.matchSelectedPerformers !== false && (sliceMode || fullMode);
 }
@@ -320,10 +320,9 @@ function SegmentTagPicker({ ids, onChange }) {
 function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions(current => ({ ...current, [key]: value }));
   const modes = selectedModes(options);
-  const slices = modes.includes("grid") || modes.includes("three-pane");
   const portrait = modes.includes("three-pane");
   const full = modes.includes("full-screen");
-  const faceSlices = modes.includes("grid") || (portrait && !options.useVerticalVideosOnly);
+  const faceSlices = portrait && !options.useVerticalVideosOnly;
   const toggleMode = (mode, enabled) => setOptions(current => ({ ...current,
     layoutModes: enabled ? [...new Set([...(current.layoutModes || []), mode])] : (current.layoutModes || []).filter(item => item !== mode) }));
   return <>
@@ -338,10 +337,10 @@ function OptionForm({ options, setOptions }) {
     </fieldset>
     <div className="pmv-grid">
       {portrait && <Control label="Use vertical videos only" help={optionHelp.useVerticalVideosOnly} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options.useVerticalVideosOnly} onChange={e => set("useVerticalVideosOnly", e.target.checked)} />}</Control>}
-      {slices && faceSlices && <Control label="Slice selection mode" help={optionHelp.selectionMode}>{id => <select id={id} value={options.selectionMode || "center"} onChange={e => set("selectionMode", e.target.value)}><option value="random">Random slice</option><option value="center">Center slice</option><option value="face">Face slice</option></select>}</Control>}
-      {slices && faceSlices && options.selectionMode === "face" && <Control label="Keep face centered" help={optionHelp.keepFaceCentered} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.keepFaceCentered !== false} onChange={e => set("keepFaceCentered", e.target.checked)} />}</Control>}
+      {faceSlices && <Control label="Portrait slice selection mode" help={optionHelp.selectionMode}>{id => <select id={id} value={options.selectionMode || "center"} onChange={e => set("selectionMode", e.target.value)}><option value="random">Random slice</option><option value="center">Center slice</option><option value="face">Face slice</option></select>}</Control>}
+      {faceSlices && options.selectionMode === "face" && <Control label="Keep face centered" help={optionHelp.keepFaceCentered} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.keepFaceCentered !== false} onChange={e => set("keepFaceCentered", e.target.checked)} />}</Control>}
       {full && <Control label="Full-screen selection mode" help={optionHelp.fullSelectionMode}>{id => <><select id={id} value={options.fullSelectionMode || "face"} onChange={e => set("fullSelectionMode", e.target.value)}><option value="face">Face match</option><option value="scene">Scene (no performer check)</option></select>{options.fullSelectionMode === "scene" && <small>Scene shots are not matched to a performer.</small>}</>}</Control>}
-      {((slices && faceSlices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && <Control label="Match selected performers" help={optionHelp.matchSelectedPerformers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.matchSelectedPerformers !== false} onChange={e => set("matchSelectedPerformers", e.target.checked)} />}</Control>}
+      {((faceSlices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && <Control label="Match selected performers" help={optionHelp.matchSelectedPerformers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.matchSelectedPerformers !== false} onChange={e => set("matchSelectedPerformers", e.target.checked)} />}</Control>}
       {portrait && <Control label="Mirror repeated source" help={optionHelp.mirrorRepeatedSource} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.mirrorRepeatedSource !== false} onChange={e => set("mirrorRepeatedSource", e.target.checked)} />}</Control>}
     </div>
     <div className="pmv-form-heading"><h5>Creative direction</h5><span>02</span></div>
@@ -357,7 +356,7 @@ function OptionForm({ options, setOptions }) {
       <Control label="Cycle longer clip into segments" help={optionHelp.cycleLongerClipIntoSegments} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.cycleLongerClipIntoSegments !== false} onChange={e => set("cycleLongerClipIntoSegments", e.target.checked)} />}</Control>
       {[["minimumTimestampSeconds", "Clip minimum timestamp"], ["endBufferSeconds", "Keep clear before source end"], ["rotatedClipLengthSeconds", "Rotated scene length"]].map(([key, label]) => <Control key={key} label={`${label} (sec)`} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" max={key === "rotatedClipLengthSeconds" ? 300 : undefined} step="0.5" value={options[key] ?? 0} onChange={e => set(key, Number(e.target.value))} />}</Control>)}
       <Control label="Beats per bar" help={optionHelp.beatsPerBar}>{id => <select id={id} value={options.beatsPerBar || "auto"} onChange={e => set("beatsPerBar", e.target.value)}><option value="auto">Auto</option><option value="3">3</option><option value="4">4</option><option value="6">6</option></select>}</Control>
-      {((slices && faceSlices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && options.matchSelectedPerformers !== false && <Control label="Face slice performer matching minimum confidence required" help={optionHelp.faceSimilarityThreshold}>{id => <div className="pmv-range"><input id={id} type="range" min="0.55" max="0.8" step="0.01" value={Math.max(0.55, options.faceSimilarityThreshold ?? 0.55)} onChange={e => set("faceSimilarityThreshold", Number(e.target.value))} /><output>{Math.round(100 * Math.max(0.55, options.faceSimilarityThreshold ?? 0.55))}%</output></div>}</Control>}
+      {((faceSlices && options.selectionMode === "face") || (full && options.fullSelectionMode === "face")) && options.matchSelectedPerformers !== false && <Control label="Performer face match minimum similarity" help={optionHelp.faceSimilarityThreshold}>{id => <div className="pmv-range"><input id={id} type="range" min="0.55" max="0.8" step="0.01" value={Math.max(0.55, options.faceSimilarityThreshold ?? 0.55)} onChange={e => set("faceSimilarityThreshold", Number(e.target.value))} /><output>{Math.round(100 * Math.max(0.55, options.faceSimilarityThreshold ?? 0.55))}%</output></div>}</Control>}
       {["beatAdherence", "sourceDiversity"].map(key => <Control key={key} label={key === "beatAdherence" ? "Beat adherence" : "Source diversity"} help={optionHelp[key]}>{id => <div className="pmv-range"><input id={id} type="range" min="0" max="1" step="0.05" value={options[key]} onChange={e => set(key, Number(e.target.value))} /><output>{Number(options[key]).toFixed(2)}</output></div>}</Control>)}
       {["songTrimStart", "songTrimEnd"].map((key, i) => <Control key={key} label={["Song start (sec)", "Song end (sec)"][i]} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
       <Control label="FPS override" help={optionHelp.outputFps}>{id => <select id={id} value={options.outputFps ?? ""} onChange={e => set("outputFps", e.target.value ? Number(e.target.value) : null)}><option value="">Auto</option><option value="24">24 fps</option><option value="25">25 fps</option><option value="30">30 fps</option><option value="50">50 fps</option><option value="60">60 fps</option></select>}</Control>

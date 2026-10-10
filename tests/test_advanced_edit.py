@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
 
 from advanced_edit import edit_plan
 from music_analysis import BeatGrid
-from engine import beat_grid
+from engine import beat_grid, run
 from source_picker import permitted_ranges, SourceCursor
 
 
@@ -20,6 +20,10 @@ def source(ident, duration=200, segments=None, tag_only=False):
 
 
 class AdvancedEditTests(unittest.TestCase):
+    def test_source_command_timeout_stops_a_stalled_decoder(self):
+        with self.assertRaisesRegex(TimeoutError, "exceeded"):
+            run([sys.executable, "-c", "import time; time.sleep(3)"], timeout=0.1)
+
     def test_beat_grid_tracks_bars_and_phrase_from_accents(self):
         import numpy as np
         sample_rate = 11025
@@ -64,6 +68,41 @@ class AdvancedEditTests(unittest.TestCase):
                 cursor.next(2)
             next_band = cursor.next(2)
             self.assertGreaterEqual(next_band[0], 5)
+
+    def test_rejected_source_has_bounded_scene_work_and_advances_next_time(self):
+        options = {"sampledClipsProgress": True, "maxClipSeconds": 2,
+                   "rotatedClipLengthSeconds": 10}
+        cursor = SourceCursor(source(1, duration=100), options)
+        with patch("source_picker.scene_ranges", return_value=[]) as scenes:
+            self.assertIsNone(cursor.next(2, max_windows=4))
+            self.assertEqual(4, scenes.call_count)
+            first_batch = [call.args[1] for call in scenes.call_args_list]
+            self.assertIsNone(cursor.next(2, max_windows=4))
+            self.assertEqual(8, scenes.call_count)
+            self.assertGreater(scenes.call_args_list[4].args[1], first_batch[0])
+
+    def test_rejected_face_checks_are_bounded_within_a_busy_scene_window(self):
+        options = {"sampledClipsProgress": True, "maxClipSeconds": 2,
+                   "rotatedClipLengthSeconds": 10}
+        cursor = SourceCursor(source(1, duration=100), options)
+        checks = []
+        def busy_scenes(_path, start, duration, _cancel):
+            return [(start + i, start + i + 1) for i in range(9)]
+        with patch("source_picker.scene_ranges", side_effect=busy_scenes) as scenes:
+            self.assertIsNone(cursor.next(0.75, lambda at, _length: checks.append(at) or None,
+                                          max_windows=4, max_checks=5))
+        self.assertEqual(5, len(checks))
+        self.assertEqual(1, scenes.call_count)
+
+    def test_source_scan_timeout_is_reported_and_next_video_can_be_tried(self):
+        options = {"sampledClipsProgress": True, "maxClipSeconds": 2,
+                   "rotatedClipLengthSeconds": 10}
+        cursor = SourceCursor(source(1, duration=100), options)
+        errors = []
+        with patch("source_picker.scene_ranges", side_effect=TimeoutError("decoder stalled")):
+            self.assertIsNone(cursor.next(2, max_windows=1,
+                                          on_window_error=lambda _start, _span, exc: errors.append(str(exc))))
+        self.assertEqual(["decoder stalled"], errors)
 
     def test_bar_cadence_mirror_and_full_song(self):
         beats = BeatGrid([float(i) for i in range(17)], bars=(0, 4, 8, 12), phrases=(8,), meter=4)

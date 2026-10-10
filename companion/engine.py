@@ -10,18 +10,23 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 
 
-def run(args, *, cancel=None, **kwargs):
+def run(args, *, cancel=None, timeout=None, **kwargs):
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+    deadline = time.monotonic() + timeout if timeout is not None else None
     try:
         while process.poll() is None:
             if cancel and cancel.is_set():
                 process.kill()
                 raise InterruptedError("Job cancelled")
+            if deadline is not None and time.monotonic() >= deadline:
+                process.kill()
+                raise TimeoutError(f"{Path(args[0]).name} exceeded {timeout:g}s while reading source media")
             try:
                 out, err = process.communicate(timeout=0.25)
                 break
@@ -32,6 +37,7 @@ def run(args, *, cancel=None, **kwargs):
     finally:
         if process.poll() is None:
             process.kill()
+        process.wait()
     if process.returncode:
         raise RuntimeError(f"{Path(args[0]).name} failed: {err.decode(errors='replace')[-2000:]}")
     return out, err

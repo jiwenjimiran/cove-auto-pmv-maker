@@ -50,7 +50,8 @@ def scene_ranges(path, start, duration, cancel=None):
 
     fps, width, height = 6, 160, 90
     raw, _ = run(["ffmpeg", "-v", "error", "-ss", str(start), "-t", str(duration), "-i", path,
-                  "-vf", f"fps={fps},scale={width}:{height}", "-pix_fmt", "bgr24", "-f", "rawvideo", "-"], cancel=cancel)
+                  "-vf", f"fps={fps},scale={width}:{height}", "-pix_fmt", "bgr24", "-f", "rawvideo", "-"],
+                 cancel=cancel, timeout=20)
     frame_size = width * height * 3
     frames = np.frombuffer(raw[:len(raw) // frame_size * frame_size], dtype=np.uint8).reshape(-1, height, width, 3)
     if not len(frames):
@@ -84,12 +85,17 @@ class SourceCursor:
         self.position = None
         self.current_segment_id = None
 
-    def next(self, length, accept=None, on_window=None):
+    def next(self, length, accept=None, on_window=None, max_windows=None, max_checks=None,
+             on_window_error=None):
         if not self.ranges:
             return None
         attempts = 0
+        windows = 0
+        checks = 0
         while attempts < len(self.ranges) * 3:
             if self.position is None or not self.shots:
+                if max_windows is not None and windows >= max_windows:
+                    break
                 source_range = self.ranges[self.index % len(self.ranges)]
                 self.index += 1
                 attempts += 1
@@ -101,8 +107,14 @@ class SourceCursor:
                 window_start = source_range.start + (self.rng.random() * free if free > 0 else 0)
                 if on_window:
                     on_window(attempts, window_start, window_length, source_range)
-                self.shots = [(a, b, source_range.segment_id) for a, b in
-                              scene_ranges(self.source["path"], window_start, window_length, self.cancel)]
+                windows += 1
+                try:
+                    self.shots = [(a, b, source_range.segment_id) for a, b in
+                                  scene_ranges(self.source["path"], window_start, window_length, self.cancel)]
+                except (TimeoutError, RuntimeError) as exc:
+                    if on_window_error:
+                        on_window_error(window_start, window_length, exc)
+                    self.shots = []
                 self.position = self.shots[0][0] if self.shots else None
                 if self.position is None:
                     continue
@@ -113,7 +125,12 @@ class SourceCursor:
                 self.position = self.shots[0][0] if self.shots else None
                 continue
             # A rejected face sample can be retried once later in the same shot.
-            for candidate_start in (start, min(right - length, start + max(0.5, length / 2))):
+            for candidate_start in dict.fromkeys((start, min(right - length, start + max(0.5, length / 2)))):
+                if max_checks is not None and checks >= max_checks:
+                    self.shots = []
+                    self.position = None
+                    return None
+                checks += 1
                 result = accept(candidate_start, length) if accept else True
                 if result:
                     self.position = candidate_start + length

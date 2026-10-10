@@ -460,7 +460,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                     set_property("FlipX", True, "mirror repeated source")
             else:
                 set_property("Scaling", resolve.SCALE_FILL, "full-screen scaling")
-            face_slice = role in ("three-pane", "grid") and options.get("selectionMode") == "face"
+            face_slice = role == "three-pane" and options.get("selectionMode") == "face"
             if not face_slice and style == "high-energy" and clip.accent:
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.1 * motion_intensity)

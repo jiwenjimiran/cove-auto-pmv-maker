@@ -159,7 +159,13 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
                 if progress and matcher:
                     progress(25 + 14 * index / max(1, len(times) - 1),
                              f"Matching faces: video {sid} ({offset + 1}/{len(eligible)} candidates), pane {pane + 1}, song {left:.1f}s")
-                found = cursors[sid].next(required, accept, on_window)
+                found = cursors[sid].next(required, accept, on_window,
+                                          max_windows=3 if matcher else 1,
+                                          max_checks=6 if matcher else None,
+                                          on_window_error=(lambda start, span, exc:
+                                              log(f"Source scan failed for video {sid}, source "
+                                                  f"{clock_time(start)}–{clock_time(start + span)}: {exc}"))
+                                          if log else None)
                 if not found:
                     failed_length[sid] = min(required, failed_length.get(sid, required))
                     if log:

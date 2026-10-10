@@ -59,6 +59,14 @@ class LayoutEditTests(unittest.TestCase):
                           layoutModes=["grid", "full-screen"])
         self.assertEqual({"grid", "full-screen"}, {c.layout_role for c in clips})
 
+    def test_grid_never_uses_face_slice_even_when_saved_selection_is_face(self):
+        with patch("face_analysis.FaceAnalyzer") as analyzer:
+            clips = self.plan([source(i) for i in range(1, 6)], "full-screen",
+                              layoutModes=["grid", "full-screen"], selectionMode="face",
+                              fullSelectionMode="scene")
+        analyzer.assert_not_called()
+        self.assertEqual({"grid", "full-screen"}, {clip.layout_role for clip in clips})
+
     def test_triple_portrait_expands_when_continuous_footage_exists(self):
         clips = self.plan([source(i) for i in range(1, 6)], "full-screen",
                           layoutModes=["three-pane", "full-screen"])

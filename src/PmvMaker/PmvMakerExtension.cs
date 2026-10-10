@@ -33,7 +33,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.20";
+    public string Version => "0.1.21";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -500,7 +500,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         if (options.SegmentTagIds is null || options.SegmentTagIds.Length > 100 || options.SegmentTagIds.Any(id => id <= 0))
             return "Segment list must contain at most 100 valid tags.";
         if (options.FaceSimilarityThreshold is < 0.55 or > 0.8 || !double.IsFinite(options.FaceSimilarityThreshold))
-            return "Face slice performer match minimum must be between 55% and 80% SFace similarity.";
+            return "Performer face match minimum must be between 55% and 80% SFace similarity.";
         if (options.MinimumTimestampSeconds < 0 || options.EndBufferSeconds < 0
             || !double.IsFinite(options.MinimumTimestampSeconds) || !double.IsFinite(options.EndBufferSeconds))
             return "Clip timestamp and end buffer must be nonnegative seconds.";
@@ -530,8 +530,13 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var options = request.Options ?? settings.Defaults;
         var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct, options), options);
         if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
-        logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; modes {Modes}, selection {Selection}, audio {AudioKind}",
-            resolved.Videos.Count, resolved.Exclusions.Count, string.Join(",", EffectiveLayoutModes(options)), options.SelectionMode, request.Audio.Kind);
+        var activeModes = EffectiveLayoutModes(options);
+        var portraitSelection = activeModes.Contains("three-pane") && !options.UseVerticalVideosOnly
+            ? options.SelectionMode : "inactive";
+        var fullSelection = activeModes.Contains("full-screen") ? options.FullSelectionMode : "inactive";
+        logger.LogInformation("[PMV] Resolved {SourceCount} eligible videos; {ExclusionCount} excluded; modes {Modes}, portrait slice {PortraitSelection}, full-screen {FullSelection}, audio {AudioKind}",
+            resolved.Videos.Count, resolved.Exclusions.Count, string.Join(",", activeModes), portraitSelection,
+            fullSelection, request.Audio.Kind);
         var referenceIds = new List<string>();
         try
         {
@@ -765,8 +770,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private static bool NeedsFaceReferences(PmvOptions options)
     {
         var modes = EffectiveLayoutModes(options);
-        var multiFace = options.SelectionMode == "face" && (modes.Contains("grid")
-            || modes.Contains("three-pane") && !options.UseVerticalVideosOnly);
+        var multiFace = options.SelectionMode == "face" && modes.Contains("three-pane")
+            && !options.UseVerticalVideosOnly;
         var fullFace = modes.Contains("full-screen") && options.FullSelectionMode == "face";
         return options.MatchSelectedPerformers && (multiFace || fullFace);
     }
