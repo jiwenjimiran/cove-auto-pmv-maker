@@ -32,7 +32,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.19";
+    public string Version => "0.1.20";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -217,7 +217,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 tagQuery = tagQuery.Where(tag => db.Segments.Any(segment => segment.HostType == SegmentHostType.Video
                     && segment.TagId == tag.Id && segment.EndSec > segment.StartSec));
                 if (query.Length > 0)
-                    tagQuery = tagQuery.Where(tag => tag.Name.Contains(query));
+                {
+                    var pattern = "%" + query.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+                    tagQuery = tagQuery.Where(tag => EF.Functions.ILike(tag.Name, pattern, "\\"));
+                }
             }
             var tags = await tagQuery.OrderBy(tag => tag.Name).Take(100)
                 .Select(tag => new { tag.Id, tag.Name,
