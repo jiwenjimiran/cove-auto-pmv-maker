@@ -1,7 +1,7 @@
 {
   "name": "cove-auto-pmv-maker-ui",
   "private": true,
-  "version": "0.1.17",
+  "version": "0.1.18",
   "type": "module",
   "scripts": { "build": "node build.mjs" },
   "devDependencies": { "esbuild": "^0.25.8" }
