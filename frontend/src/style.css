@@ -122,3 +122,18 @@
 .pmv-face-list button { border: 1px solid #5e6470; border-radius: 999px; padding: .35rem .7rem; background: transparent; color: inherit; cursor: pointer; }
 .pmv-face-list button.selected { background: #24769a; border-color: #56b2cf; color: white; }
 .pmv-face-list button:disabled { opacity: .48; cursor: not-allowed; }
+.pmv-segment-picker{margin:1rem 0}
+.pmv-segment-picker p{margin:.4rem 0 .8rem;color:var(--pmv-muted);font-size:12px;line-height:1.45}
+.pmv-segment-combobox{max-width:640px}
+.pmv-segment-input-wrap{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:39px;padding:5px 7px;border:1px solid var(--pmv-border);border-radius:9px;background:var(--color-input,rgba(0,0,0,.25))}
+.pmv-segment-input-wrap:focus-within{border-color:var(--pmv-accent);box-shadow:0 0 0 1px var(--pmv-accent)}
+.pmv-dialog .pmv-segment-input-wrap input,.pmv-settings .pmv-segment-input-wrap input{flex:1;min-width:175px;width:auto;padding:4px 5px;border:0;background:transparent;box-shadow:none;outline:none}
+.pmv-dialog .pmv-segment-input-wrap input:focus-visible,.pmv-settings .pmv-segment-input-wrap input:focus-visible{outline:none}
+.pmv-segment-pill{display:inline-flex;align-items:center;gap:4px;max-width:100%;padding:3px 4px 3px 9px;border:1px solid color-mix(in srgb,var(--pmv-accent) 55%,var(--pmv-border));border-radius:999px;background:color-mix(in srgb,var(--pmv-accent) 20%,var(--pmv-surface));font-size:12px}
+.pmv-segment-pill span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pmv-dialog .pmv-segment-pill button,.pmv-settings .pmv-segment-pill button{display:grid;place-items:center;flex:none;width:21px;height:21px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--pmv-muted);font-size:17px;line-height:1}
+.pmv-dialog .pmv-segment-pill button:hover,.pmv-settings .pmv-segment-pill button:hover{background:var(--pmv-hover);color:var(--pmv-text)}
+.pmv-segment-suggestions{display:flex;flex-direction:column;max-height:210px;overflow-y:auto;margin-top:4px;padding:4px;border:1px solid var(--pmv-border);border-radius:9px;background:var(--pmv-card);box-shadow:0 10px 24px rgba(0,0,0,.2)}
+.pmv-dialog .pmv-segment-suggestions button,.pmv-settings .pmv-segment-suggestions button{width:100%;padding:8px 10px;border:0;border-radius:5px;background:transparent;text-align:left;font-weight:500}
+.pmv-dialog .pmv-segment-suggestions button.is-active,.pmv-settings .pmv-segment-suggestions button.is-active{background:color-mix(in srgb,var(--pmv-accent) 19%,var(--pmv-surface))}
+.pmv-segment-status{padding:9px 10px;color:var(--pmv-muted);font-size:12px}

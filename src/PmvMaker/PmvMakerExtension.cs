@@ -32,7 +32,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.18";
+    public string Version => "0.1.19";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -209,11 +209,17 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 .Select(value => int.TryParse(value, out var id) ? id : 0).Where(id => id > 0).Distinct().Take(100).ToArray();
             await using var scope = _scopes!.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var tags = await db.Tags.AsNoTracking()
-                .Where(tag => ids.Contains(tag.Id) || query.Length >= 2 && tag.Name.Contains(query)
-                    && db.Segments.Any(segment => segment.HostType == SegmentHostType.Video
-                        && segment.TagId == tag.Id && segment.EndSec > segment.StartSec))
-                .OrderBy(tag => tag.Name).Take(100)
+            var tagQuery = db.Tags.AsNoTracking();
+            if (ids.Length > 0)
+                tagQuery = tagQuery.Where(tag => ids.Contains(tag.Id));
+            else
+            {
+                tagQuery = tagQuery.Where(tag => db.Segments.Any(segment => segment.HostType == SegmentHostType.Video
+                    && segment.TagId == tag.Id && segment.EndSec > segment.StartSec));
+                if (query.Length > 0)
+                    tagQuery = tagQuery.Where(tag => tag.Name.Contains(query));
+            }
+            var tags = await tagQuery.OrderBy(tag => tag.Name).Take(100)
                 .Select(tag => new { tag.Id, tag.Name,
                     HasTimedSegments = db.Segments.Any(segment => segment.HostType == SegmentHostType.Video
                         && segment.TagId == tag.Id && segment.EndSec > segment.StartSec) })

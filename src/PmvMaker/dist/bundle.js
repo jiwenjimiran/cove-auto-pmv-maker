@@ -286,37 +286,121 @@ function SegmentTagPicker({ ids, onChange }) {
   const [tags, setTags] = useState([]);
   const [selected, setSelected] = useState([]);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [active, setActive] = useState(0);
+  const rootRef = useRef(null);
+  const inputRef = useRef(null);
+  const listId = useRef("pmv-segment-suggestions-" + Math.random().toString(36).slice(2)).current;
+  const chosen = ids || [];
   useEffect(() => {
     if (!ids?.length) {
       setSelected([]);
       return;
     }
-    api("/segment-tags?ids=" + ids.join(",")).then(setSelected).catch((e) => setError(e.message));
+    let live = true;
+    api("/segment-tags?ids=" + ids.join(",")).then((rows) => {
+      if (live) setSelected(rows);
+    }).catch((e) => {
+      if (live) setError(e.message);
+    });
+    return () => {
+      live = false;
+    };
   }, [JSON.stringify(ids || [])]);
   useEffect(() => {
-    if (query.trim().length < 2) {
-      setTags([]);
-      return;
-    }
-    let active = true;
+    if (!open) return;
+    let live = true;
+    setLoading(true);
     const timer = window.setTimeout(() => api("/segment-tags?q=" + encodeURIComponent(query.trim())).then((rows) => {
-      if (active) {
+      if (live) {
         setTags(rows);
+        setActive(0);
         setError("");
       }
     }).catch((e) => {
-      if (active) setError(e.message);
-    }), 250);
+      if (live) {
+        setTags([]);
+        setError(e.message);
+      }
+    }).finally(() => {
+      if (live) setLoading(false);
+    }), query.trim() ? 180 : 0);
     return () => {
-      active = false;
+      live = false;
       window.clearTimeout(timer);
     };
-  }, [query]);
-  const chosen = ids || [];
-  return /* @__PURE__ */ React.createElement("fieldset", { className: "pmv-face-picker" }, /* @__PURE__ */ React.createElement("legend", null, "Segment list"), /* @__PURE__ */ React.createElement("p", null, "When populated, only time inside matching timed segment tags is eligible. Multiple tags match either tag."), /* @__PURE__ */ React.createElement("input", { "aria-label": "Search segment tags", value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search segment tags, e.g. fingers" }), error && /* @__PURE__ */ React.createElement("p", { role: "alert" }, error), /* @__PURE__ */ React.createElement("div", { className: "pmv-face-list" }, selected.map((tag) => /* @__PURE__ */ React.createElement("button", { type: "button", key: tag.id, className: "selected", onClick: () => onChange(chosen.filter((id) => id !== tag.id)) }, tag.name, tag.hasTimedSegments === false ? " (no timed segments)" : "", " \xD7")), tags.filter((tag) => !chosen.includes(tag.id)).map((tag) => /* @__PURE__ */ React.createElement("button", { type: "button", key: tag.id, onClick: () => {
+  }, [query, open]);
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
+  const suggestions = tags.filter((tag) => !chosen.includes(tag.id));
+  const choose = (tag) => {
+    if (chosen.includes(tag.id)) return;
+    setSelected((current) => [...current.filter((item) => item.id !== tag.id), tag]);
     onChange([...chosen, tag.id]);
     setQuery("");
-  } }, tag.name, " +"))));
+    setActive(0);
+    inputRef.current?.focus();
+  };
+  const handleKey = (event) => {
+    if (event.key === "Escape") {
+      setOpen(false);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setOpen(true);
+      setActive((index) => Math.max(0, Math.min(suggestions.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))));
+    }
+    if (event.key === "Enter" && open) {
+      event.preventDefault();
+      if (suggestions.length) choose(suggestions[Math.min(active, suggestions.length - 1)]);
+    }
+  };
+  return /* @__PURE__ */ React.createElement("fieldset", { className: "pmv-segment-picker" }, /* @__PURE__ */ React.createElement("legend", null, "Segment list"), /* @__PURE__ */ React.createElement("p", null, "When populated, only time inside matching timed segment tags is eligible. Multiple tags match either tag."), /* @__PURE__ */ React.createElement("div", { ref: rootRef, className: "pmv-segment-combobox" }, /* @__PURE__ */ React.createElement("div", { className: "pmv-segment-input-wrap" }, chosen.map((id) => {
+    const tag = selected.find((row) => row.id === id) || tags.find((row) => row.id === id) || { id, name: `Tag #${id}` };
+    return /* @__PURE__ */ React.createElement("span", { key: id, className: "pmv-segment-pill", title: tag.hasTimedSegments === false ? "This tag has no timed video segments" : void 0 }, /* @__PURE__ */ React.createElement("span", null, tag.name, tag.hasTimedSegments === false ? " (no segments)" : ""), /* @__PURE__ */ React.createElement("button", { type: "button", "aria-label": `Remove ${tag.name}`, title: `Remove ${tag.name}`, onClick: () => onChange(chosen.filter((value) => value !== id)) }, "\xD7"));
+  }), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      ref: inputRef,
+      role: "combobox",
+      "aria-label": "Search segment tags",
+      "aria-autocomplete": "list",
+      "aria-controls": listId,
+      "aria-expanded": open,
+      "aria-activedescendant": open && suggestions.length ? `${listId}-${suggestions[Math.min(active, suggestions.length - 1)].id}` : void 0,
+      autoComplete: "off",
+      value: query,
+      onFocus: () => setOpen(true),
+      onChange: (event) => {
+        setQuery(event.target.value);
+        setOpen(true);
+      },
+      onKeyDown: handleKey,
+      placeholder: chosen.length ? "Add another segment tag\u2026" : "Search segment tags\u2026"
+    }
+  )), open && /* @__PURE__ */ React.createElement("div", { id: listId, role: "listbox", "aria-label": "Segment tags with timed video segments", className: "pmv-segment-suggestions" }, loading ? /* @__PURE__ */ React.createElement("div", { className: "pmv-segment-status" }, "Searching segment tags\u2026") : error ? /* @__PURE__ */ React.createElement("div", { className: "pmv-segment-status", role: "alert" }, error) : suggestions.length ? suggestions.map((tag, index) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      id: `${listId}-${tag.id}`,
+      type: "button",
+      role: "option",
+      "aria-selected": index === active,
+      key: tag.id,
+      className: index === active ? "is-active" : "",
+      onMouseEnter: () => setActive(index),
+      onMouseDown: (event) => event.preventDefault(),
+      onClick: () => choose(tag)
+    },
+    tag.name
+  )) : /* @__PURE__ */ React.createElement("div", { className: "pmv-segment-status" }, query.trim() ? "No matching segment tags" : "No more segment tags available"))));
 }
 function OptionForm({ options, setOptions }) {
   const set = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
