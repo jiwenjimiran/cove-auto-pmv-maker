@@ -82,6 +82,8 @@ try
         throw new Exception("Settings endpoint did not return the expected defaults.");
     if (settingsJson.RootElement.GetProperty("defaults").GetProperty("colorTreatment").GetString() != "natural")
         throw new Exception("Older saved settings should adopt the new None color matching default.");
+    if (!settingsJson.RootElement.GetProperty("defaults").GetProperty("reencodeIncompatibleContainers").GetBoolean())
+        throw new Exception("Windows Media range conversion must default on.");
 
     using var audioPreview = new HttpRequestMessage(HttpMethod.Get, address + "/api/ext/pmv/music-preview?path=song.mp3");
     audioPreview.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 2);

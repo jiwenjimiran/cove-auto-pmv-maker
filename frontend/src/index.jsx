@@ -96,6 +96,7 @@ const optionHelp = {
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
   outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
   outputCodec: "Render an MP4 with H.264, H.265, or AV1. AV1 uses hardware encoding only. If Resolve rejects direct AV1, an NVIDIA encoder converts a temporary high-quality Resolve render. Create checks availability before queueing.",
+  reencodeIncompatibleContainers: "Convert only selected ranges from Windows Media (WMV/ASF) sources to temporary H.264 clips that Resolve can import. Saved projects keep these clips beside the .drp. Turning this off excludes those sources.",
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
   colorTreatment: "None leaves source colors alone. Match brightness samples the first two seconds of each used video. Warm and Cool apply subtle color shifts.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
@@ -213,7 +214,8 @@ const defaultOptions = {
   transitionFamilies: ["cut", "dissolve"], transitionIntensityMin: 0.15, transitionIntensityMax: 0.35,
   motionIntensityMin: 0.15, motionIntensityMax: 0.35, flashIntensityMin: 0, flashIntensityMax: 0,
   glitchIntensityMin: 0, glitchIntensityMax: 0, colorTreatment: "natural", songTrimStart: null,
-  songTrimEnd: null, outputFps: null, outputCodec: "av1", saveProject: false, scanToCove: true,
+  songTrimEnd: null, outputFps: null, outputCodec: "av1", reencodeIncompatibleContainers: true,
+  saveProject: false, scanToCove: true,
   keepPerformers: true, keepTags: true, addPmvTag: true, addAutoPmvTag: true
 };
 
@@ -363,6 +365,7 @@ function OptionForm({ options, setOptions, portraitFaceControls = null }) {
       {[["pacing", "Pacing"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => <RangeControl key={key} label={label} help={optionHelp[key]} lower={options[`${key}Min`] ?? 0} upper={options[`${key}Max`] ?? 0} onChange={(lower, upper) => setOptions(current => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper }))} />)}
       <RangeControl label="Clip length (sec)" help={optionHelp.clipLength} lower={options.minClipSeconds} upper={options.maxClipSeconds} minValue={0.25} maxValue={30} step={0.25} onChange={(lower, upper) => setOptions(current => ({ ...current, minClipSeconds: lower, maxClipSeconds: upper }))} />
       <Control label="Sampled clips progress through video" help={optionHelp.sampledClipsProgress} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.sampledClipsProgress !== false} onChange={e => set("sampledClipsProgress", e.target.checked)} />}</Control>
+      <Control label="Re-encode incompatible containers" help={optionHelp.reencodeIncompatibleContainers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.reencodeIncompatibleContainers !== false} onChange={e => set("reencodeIncompatibleContainers", e.target.checked)} />}</Control>
       <Control label="Cycle longer clip into segments" help={optionHelp.cycleLongerClipIntoSegments} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.cycleLongerClipIntoSegments !== false} onChange={e => set("cycleLongerClipIntoSegments", e.target.checked)} />}</Control>
       {[["minimumTimestampSeconds", "Clip minimum timestamp"], ["endBufferSeconds", "Keep clear before source end"], ["rotatedClipLengthSeconds", "Rotated scene length"]].map(([key, label]) => <Control key={key} label={`${label} (sec)`} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" max={key === "rotatedClipLengthSeconds" ? 300 : undefined} step="0.5" value={options[key] ?? 0} onChange={e => set(key, Number(e.target.value))} />}</Control>)}
       <Control label="Beats per bar" help={optionHelp.beatsPerBar}>{id => <select id={id} value={options.beatsPerBar || "auto"} onChange={e => set("beatsPerBar", e.target.value)}><option value="auto">Auto</option><option value="3">3</option><option value="4">4</option><option value="6">6</option></select>}</Control>

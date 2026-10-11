@@ -259,6 +259,8 @@ class CompanionApiTests(unittest.TestCase):
                 legacy = Path(root) / "E030 - Sandra.WMV"
                 legacy.write_bytes(b"existing Windows Media fixture")
                 payload["sources"] = [{"path": str(legacy)}]
+                self.assertTrue(json.load(urlopen(request(server.TOKEN), timeout=2))["ok"])
+                payload["options"] = {"reencodeIncompatibleContainers": False}
                 with self.assertRaises(HTTPError) as unsupported:
                     urlopen(request(server.TOKEN), timeout=2)
                 self.assertEqual(unsupported.exception.code, 400)

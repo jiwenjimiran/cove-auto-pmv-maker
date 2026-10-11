@@ -26,6 +26,7 @@ from tempfile import TemporaryDirectory, gettempdir
 from urllib.parse import parse_qs, urlparse
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_modes, mix_audio, output_stem, prepare_audio, reserve_output
+from media_compat import needs_reencode, prepare_resolve_clips
 from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, select_render_profile
 
 JOBS = {}
@@ -202,8 +203,8 @@ def preflight(payload):
         path = source.get("path", "")
         if not Path(path).is_file():
             raise ValueError("Resolve cannot read source: " + path)
-        if Path(path).suffix.lower() in {".wmv", ".asf"}:
-            raise ValueError("Resolve cannot import Windows Media source: " + path)
+        if needs_reencode(path) and not (payload.get("options") or {}).get("reencodeIncompatibleContainers", True):
+            raise ValueError("Resolve cannot import Windows Media source while re-encoding is disabled: " + path)
     audio = payload.get("audio") or {}
     if audio.get("kind") == "youtube":
         if shutil.which("yt-dlp") is None:
@@ -350,6 +351,7 @@ def do_job(job_id, payload):
     cancelled = state["cancelEvent"]
     marker = None
     output_path = None
+    project_media_dir = None
 
     def update(progress, message):
         state.update(progress=progress, message=message)
@@ -403,8 +405,24 @@ def do_job(job_id, payload):
                                                      bool(options.get("saveProject")))
                 update(40, f"Mixing backing song and source accents from {len(clips)} clips")
                 mix = mix_audio(song, clips, options, temp, beats[-1], trim_start, cancelled)
+                render_mix = mix
+                if options.get("saveProject"):
+                    # A .drp references its audio file by path. Keep the final
+                    # mix with the project instead of leaving it in a temp dir.
+                    media_candidate = Path(payload.get("projectFolder") or payload["outputFolder"]) / \
+                        f"{Path(output_path).stem}_media_{job_id[:8]}"
+                    media_candidate.mkdir(parents=True, exist_ok=False)
+                    project_media_dir = media_candidate
+                    render_mix = str(project_media_dir / "final-mix.wav")
+                    shutil.copy2(mix, render_mix)
+                resolve_clips = clips
+                if any(needs_reencode(clip.path) for clip in clips):
+                    if not options.get("reencodeIncompatibleContainers", True):
+                        raise ValueError("Windows Media source selected while re-encoding is disabled")
+                    media_dir = project_media_dir or Path(temp) / "resolve-media"
+                    resolve_clips = prepare_resolve_clips(clips, media_dir, cancelled, update)
                 update(52, f"Importing {len(used_video_ids)} used videos into Resolve")
-                run_resolve_worker(clips, mix, output_path, width, height, fps, options,
+                run_resolve_worker(resolve_clips, render_mix, output_path, width, height, fps, options,
                                    payload.get("projectFolder", ""), cancelled, update, temp,
                                    require_validation=not skip_checks)
                 log_job_event(state, f"Render complete: {len(clips)} timeline clips from "
@@ -426,6 +444,8 @@ def do_job(job_id, payload):
                 marker.unlink(missing_ok=True)
             if output_path and state["state"] != "complete":
                 Path(output_path).unlink(missing_ok=True)
+            if project_media_dir and state["state"] != "complete":
+                shutil.rmtree(project_media_dir, ignore_errors=True)
 
 
 class Handler(BaseHTTPRequestHandler):

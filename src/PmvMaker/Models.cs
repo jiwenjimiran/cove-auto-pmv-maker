@@ -69,6 +69,7 @@ public sealed class PmvOptions
     public double? SongTrimEnd { get; set; }
     public int? OutputFps { get; set; }
     public string OutputCodec { get; set; } = "av1";
+    public bool ReencodeIncompatibleContainers { get; set; } = true;
     public bool SaveProject { get; set; }
     public bool ScanToCove { get; set; } = true;
     public bool KeepPerformers { get; set; } = true;

@@ -34,13 +34,17 @@ var sourceScope = new ScopeResult([
     TestVideo(1, @"\\server\share\E030 - Sandra.WMV"),
     TestVideo(2, @"\\server\share\E032 - Carmen.asf"),
     TestVideo(3, @"\\server\share\usable.mp4")], ["Earlier exclusion"], null, "video");
-var filteredSources = (ScopeResult)(sourceFilter.Invoke(null, [sourceScope, new PmvOptions()])
+var filteredSources = (ScopeResult)(sourceFilter.Invoke(null, [sourceScope, new PmvOptions { ReencodeIncompatibleContainers = false }])
     ?? throw new Exception("Source eligibility filter returned null."));
 if (filteredSources.Videos.Select(v => v.Id).Single() != 3
     || filteredSources.Exclusions.Count != 3
     || !filteredSources.Exclusions[1].Contains("E030 - Sandra.WMV")
     || !filteredSources.Exclusions[2].Contains("E032 - Carmen.asf"))
     throw new Exception("Unsupported Windows Media must be excluded before rendering with visible reasons.");
+var reencodedSources = (ScopeResult)(sourceFilter.Invoke(null, [sourceScope, new PmvOptions()])
+    ?? throw new Exception("Source eligibility filter returned null."));
+if (reencodedSources.Videos.Count != 3 || reencodedSources.Exclusions.Count != 1)
+    throw new Exception("Windows Media must stay eligible when range conversion is enabled.");
 int nextSpanId = 0;
 ResolvedSpan[] displayed =
 [
