@@ -4,6 +4,8 @@ Creates song-led PMVs from Cove videos using **DaVinci Resolve Studio** on the s
 
 ## Setup
 
+After local scripting is enabled once in Resolve Studio, PMV jobs start Resolve automatically when it is closed and wait up to two minutes for the scripting connection.
+
 1. Install Resolve Studio, FFmpeg/FFprobe, and Python 3.11+ on the Windows PC. Open Resolve and enable local external scripting in **Preferences Ã¢â€ â€™ System Ã¢â€ â€™ General**. The companion installs missing Python packages (`yt-dlp`, OpenCV, and PySceneDetect) on first launch. If automatic installation fails, run `py -3 -m pip install -r companion/requirements.txt` from the extracted companion ZIP.
 2. Install `AutoPmvMaker.zip` from the [releases page](https://github.com/jiwenjimiran/cove-auto-pmv-maker/releases) using **Cove Settings Ã¢â€ â€™ Extensions Ã¢â€ â€™ Install from URL** or **Install from ZIP**. For a source checkout, run `npm install` in `frontend`, then `powershell -File scripts/package.ps1` from the repository root to build both ZIPs.
 3. In **Auto PMV Maker - Setup required**, click **Check Resolve**, then **Run Resolve compatibility check**. The job settings appear when both pass. You can choose **Skip setup checks** on first setup to open settings immediately; the choice is saved. PMV jobs still check Resolve and all media paths before rendering. Cove extracts the bundled companion, starts it hidden, and manages its private connection token. The optional compatibility check renders 19 short fixtures and saves the result for this Resolve version.
@@ -20,6 +22,8 @@ The Resolve compatibility check is available from Cove settings after setup and 
 This is a preview release. The Resolve render and compatibility checks have been exercised with Studio 21.1.1.10; other versions require their own check.
 
 ## Current implementation notes
+
+- Resolve scripting and media import run in a separate worker process so long native calls do not block the companion's HTTP status endpoint. Sources enter Resolve in groups of 12, and Cove receives a heartbeat while a worker call is taking time.
 
 - Job submission compresses large source lists and retries transport interruptions with one request ID, so a lost reply cannot queue duplicate renders. Triple portrait matching first uses Cove's linked AI Faces detections and timestamped face boxes when they cover a candidate shot. If that evidence is sparse, it samples the video and compares faces with Cove face covers or performer portraits through SFace. AI Faces embeddings come from another model, so their scores are never compared with SFace scores; the similarity threshold applies to image matching only.
 - Source selection supports videos, performers, studios, timed tags, and selected raw records mapped to their full displayed spans. Cove's resolved segment profile determines visible ranges, merged boundaries, and minimum duration; raw records are never used directly as PMV clip ranges. Include mode requires one or more timed segment tags. Exclude mode uses all visible full segments except selected tags. Either mode remains limited to the selected source and its filters. Videos with PMVMAKER in the title are excluded.

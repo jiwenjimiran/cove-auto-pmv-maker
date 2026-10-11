@@ -9,6 +9,7 @@ import importlib
 import importlib.util
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections import deque
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,7 +26,7 @@ from tempfile import TemporaryDirectory, gettempdir
 from urllib.parse import parse_qs, urlparse
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_modes, mix_audio, output_stem, prepare_audio, reserve_output
-from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render, select_render_profile
+from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, select_render_profile
 
 JOBS = {}
 SUBMISSION_IDS = {}
@@ -266,6 +268,80 @@ def job_snapshot(state, after=0):
         return result
 
 
+def run_resolve_worker(clips, audio_path, output_path, width, height, fps, options, project_folder,
+                       cancelled, progress, temp, require_validation=True, worker_script=None):
+    """Keep HTTP polling alive while Resolve makes long native scripting calls."""
+    spec_path = Path(temp) / "resolve-worker.json"
+    cancel_path = Path(temp) / "resolve-worker.cancel"
+    spec_path.write_text(json.dumps({"clips": [asdict(clip) for clip in clips], "audioPath": audio_path,
+                                     "outputPath": output_path, "width": width, "height": height, "fps": fps,
+                                     "options": options, "projectFolder": project_folder,
+                                     "cancelPath": str(cancel_path), "requireValidation": require_validation}),
+                         encoding="utf-8")
+    script = Path(worker_script or Path(__file__).with_name("render_worker.py"))
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    process = subprocess.Popen([sys.executable, str(script), str(spec_path)], cwd=str(script.parent),
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                               encoding="utf-8", errors="replace", bufsize=1, creationflags=flags)
+    lines = queue.Queue()
+    errors = deque(maxlen=40)
+
+    def read_output(stream, kind):
+        for line in stream:
+            lines.put((kind, line.rstrip()))
+        lines.put((kind, None))
+
+    readers = [threading.Thread(target=read_output, args=(process.stdout, "progress"), daemon=True),
+               threading.Thread(target=read_output, args=(process.stderr, "error"), daemon=True)]
+    for reader in readers:
+        reader.start()
+    finished_streams = set()
+    last_update = time.monotonic()
+    last_progress = 52.2
+    last_message = "Importing media into Resolve"
+    cancel_started = None
+    try:
+        while process.poll() is None or len(finished_streams) < 2 or not lines.empty():
+            if cancelled.is_set() and cancel_started is None:
+                cancel_path.touch()
+                cancel_started = time.monotonic()
+            if cancel_started is not None and process.poll() is None and time.monotonic() - cancel_started > 10:
+                process.kill()
+            try:
+                kind, line = lines.get(timeout=0.5)
+            except queue.Empty:
+                if process.poll() is None and time.monotonic() - last_update >= 30:
+                    progress(last_progress, f"Resolve worker active; last step: {last_message}")
+                    last_update = time.monotonic()
+                continue
+            if line is None:
+                finished_streams.add(kind)
+            elif kind == "error":
+                errors.append(line)
+            else:
+                try:
+                    event = json.loads(line)
+                    last_message = str(event["message"])
+                    last_progress = float(event["progress"])
+                    progress(last_progress, last_message)
+                    last_update = time.monotonic()
+                except (ValueError, KeyError, TypeError):
+                    errors.append(line)
+        code = process.wait()
+        if cancelled.is_set() or code == 2:
+            raise InterruptedError("Resolve render cancelled")
+        if code:
+            raise RuntimeError(f"Resolve worker exited with code {code}: " + " | ".join(errors)[-3000:])
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        for reader in readers:
+            reader.join(timeout=1)
+        process.stdout.close()
+        process.stderr.close()
+
+
 def do_job(job_id, payload):
     state = JOBS[job_id]
     cancelled = state["cancelEvent"]
@@ -325,8 +401,9 @@ def do_job(job_id, payload):
                 update(40, f"Mixing backing song and source accents from {len(clips)} clips")
                 mix = mix_audio(song, clips, options, temp, beats[-1], trim_start, cancelled)
                 update(52, f"Importing {len(used_video_ids)} used videos into Resolve")
-                render(clips, mix, output_path, width, height, fps, options, payload.get("projectFolder", ""), cancelled, update,
-                       require_validation=not skip_checks)
+                run_resolve_worker(clips, mix, output_path, width, height, fps, options,
+                                   payload.get("projectFolder", ""), cancelled, update, temp,
+                                   require_validation=not skip_checks)
                 log_job_event(state, f"Render complete: {len(clips)} timeline clips from "
                                     f"{len(used_video_ids)} source videos; output {output_path}")
                 state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,
@@ -524,6 +601,11 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(202, {"message": "Cancellation requested"})
 
 
+class CompanionHTTPServer(ThreadingHTTPServer):
+    request_queue_size = 64
+    daemon_threads = True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -538,4 +620,4 @@ if __name__ == "__main__":
     threading.Thread(target=prepare_dependencies, daemon=True).start()
     if args.parent_pid:
         threading.Thread(target=watch_parent, args=(args.parent_pid,), daemon=True).start()
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    CompanionHTTPServer((args.host, args.port), Handler).serve_forever()

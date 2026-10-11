@@ -22,14 +22,60 @@ VALIDATION_SCHEMA = 5
 sys.path.insert(0, str(MODULES))
 
 
+def _auto_launch_supported():
+    return os.name == "nt"
+
+
+def _resolve_running():
+    if os.name != "nt":
+        return False
+    result = subprocess.run(["tasklist.exe", "/FI", "IMAGENAME eq Resolve.exe", "/FO", "CSV", "/NH"],
+                            capture_output=True, text=True, timeout=10)
+    return result.returncode == 0 and '"Resolve.exe"' in result.stdout
+
+
+def _resolve_executable():
+    configured = os.environ.get("RESOLVE_EXECUTABLE")
+    candidates = ([configured] if configured else []) + [
+        shutil.which("Resolve.exe"),
+        str(Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) /
+            "Blackmagic Design" / "DaVinci Resolve" / "Resolve.exe")]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    raise RuntimeError("DaVinci Resolve Studio is not running and Resolve.exe was not found. "
+                       "Install Studio or set RESOLVE_EXECUTABLE to its full path.")
+
+
+def _launch_resolve():
+    executable = _resolve_executable()
+    # A short-lived launcher keeps the user's Resolve GUI independent of the
+    # companion process, which Cove may restart during extension updates.
+    launch = "import subprocess,sys; subprocess.Popen([sys.argv[1]], cwd=sys.argv[2], close_fds=True)"
+    result = subprocess.run([sys.executable, "-c", launch, str(executable), str(executable.parent)],
+                            capture_output=True, text=True, timeout=20)
+    if result.returncode:
+        raise RuntimeError("Could not start DaVinci Resolve Studio: " + result.stderr[-600:])
+
+
 def connect(require_validation=True):
     try:
         import DaVinciResolveScript as api
         resolve = api.scriptapp("Resolve")
     except Exception as exc:
         raise RuntimeError(f"Resolve scripting API unavailable: {exc}") from exc
+    if resolve is None and _auto_launch_supported() and not _resolve_running():
+        _launch_resolve()
+        deadline = time.monotonic() + 120
+        while resolve is None and time.monotonic() < deadline:
+            time.sleep(2)
+            resolve = api.scriptapp("Resolve")
+        if resolve is None:
+            raise RuntimeError("DaVinci Resolve Studio started, but its scripting API did not become ready within two minutes. "
+                               "Check that Resolve opened normally and External scripting is set to Local.")
     if resolve is None:
-        raise RuntimeError("Resolve did not accept the scripting connection. Select Local in Resolve Preferences > System > General, save, then restart the PMV engine in Cove settings.")
+        raise RuntimeError("Resolve is running but did not accept the scripting connection. "
+                           "Select Local in Resolve Preferences > System > General, save, then restart Resolve.")
     version = resolve.GetVersionString()
     product = resolve.GetProductName()
     if "Studio" not in product:
@@ -324,10 +370,17 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         for path in paths:
             if not Path(path).is_file():
                 raise RuntimeError("Resolve cannot read " + path)
-        progress(52.2, f"Importing {len(paths) - 1} videos and final audio into Resolve")
-        imported = media_storage.AddItemListToMediaPool([{"media": path} for path in paths])
-        if not imported or len(imported) != len(paths):
-            # Some versions import an existing item only once; resolve by path.
+        imported = []
+        for start in range(0, len(paths), 12):
+            if cancel.is_set():
+                raise InterruptedError("Media import cancelled")
+            batch = paths[start:start + 12]
+            progress(52.2, f"Importing videos into Resolve: {start + 1}-{start + len(batch)} of {len(paths)} files")
+            result = media_storage.AddItemListToMediaPool([{"media": path} for path in batch])
+            if result:
+                imported.extend(result)
+        if len(imported) != len(paths):
+            # Some versions return an existing item only once; resolve by path.
             imported = folder.GetClipList()
         items = {}
         for item in imported:

@@ -5,10 +5,32 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
+import resolve_adapter
 from resolve_adapter import ffmpeg_av1_encoder, select_mp4_codec, select_render_profile, set_item_property, source_frame_range
 
 
 class TimelinePropertyTests(unittest.TestCase):
+    def test_connect_starts_resolve_when_it_is_closed(self):
+        resolve = SimpleNamespace(GetVersionString=lambda: "21.1.1", GetProductName=lambda: "DaVinci Resolve Studio")
+        api = SimpleNamespace(scriptapp=unittest.mock.Mock(side_effect=[None, None, resolve]))
+        with patch.dict(sys.modules, {"DaVinciResolveScript": api}), \
+                patch.object(resolve_adapter, "_auto_launch_supported", return_value=True), \
+                patch.object(resolve_adapter, "_resolve_running", return_value=False), \
+                patch.object(resolve_adapter, "_launch_resolve") as launch, \
+                patch.object(resolve_adapter.time, "sleep"):
+            self.assertIs(resolve, resolve_adapter.connect(require_validation=False))
+            launch.assert_called_once()
+
+    def test_connect_does_not_start_another_running_resolve(self):
+        api = SimpleNamespace(scriptapp=lambda _name: None)
+        with patch.dict(sys.modules, {"DaVinciResolveScript": api}), \
+                patch.object(resolve_adapter, "_auto_launch_supported", return_value=True), \
+                patch.object(resolve_adapter, "_resolve_running", return_value=True), \
+                patch.object(resolve_adapter, "_launch_resolve") as launch:
+            with self.assertRaisesRegex(RuntimeError, "Resolve is running"):
+                resolve_adapter.connect(require_validation=False)
+            launch.assert_not_called()
+
     def setUp(self):
         self.clip = SimpleNamespace(video_id=42, path="example.mp4", record_start=12.5, source_start=7.0)
 
