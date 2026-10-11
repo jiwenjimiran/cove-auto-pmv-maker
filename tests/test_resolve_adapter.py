@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
 import resolve_adapter
-from resolve_adapter import ffmpeg_av1_encoder, import_media_items, select_mp4_codec, select_render_profile, set_item_property, source_frame_range
+from resolve_adapter import MediaImportError, ffmpeg_av1_encoder, import_media_items, select_mp4_codec, select_render_profile, set_item_property, source_frame_range
 
 
 class TimelinePropertyTests(unittest.TestCase):
@@ -41,6 +41,9 @@ class TimelinePropertyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing.mp4") as failure:
                 import_media_items(storage, folder, [missing], threading.Event(), lambda *_: None)
         self.assertLess(len(str(failure.exception)), 1000)
+        self.assertIsInstance(failure.exception, MediaImportError)
+        self.assertEqual([missing], failure.exception.missing)
+        self.assertEqual({}, failure.exception.imported)
 
     def test_connect_starts_resolve_when_it_is_closed(self):
         resolve = SimpleNamespace(GetVersionString=lambda: "21.1.1", GetProductName=lambda: "DaVinci Resolve Studio")

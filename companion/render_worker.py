@@ -32,7 +32,7 @@ def run(spec):
 
     render(clips, spec["audioPath"], spec["outputPath"], spec["width"], spec["height"],
            spec["fps"], spec["options"], spec["projectFolder"], cancel,
-           progress, require_validation=spec["requireValidation"])
+           progress, require_validation=spec["requireValidation"], media_dir=spec.get("mediaDir"))
 
 
 if __name__ == "__main__":

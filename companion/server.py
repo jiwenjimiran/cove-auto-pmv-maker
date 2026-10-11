@@ -272,13 +272,14 @@ def job_snapshot(state, after=0):
 
 
 def run_resolve_worker(clips, audio_path, output_path, width, height, fps, options, project_folder,
-                       cancelled, progress, temp, require_validation=True, worker_script=None):
+                       cancelled, progress, temp, require_validation=True, worker_script=None, media_dir=None):
     """Keep HTTP polling alive while Resolve makes long native scripting calls."""
     spec_path = Path(temp) / "resolve-worker.json"
     cancel_path = Path(temp) / "resolve-worker.cancel"
     spec_path.write_text(json.dumps({"clips": [asdict(clip) for clip in clips], "audioPath": audio_path,
                                      "outputPath": output_path, "width": width, "height": height, "fps": fps,
                                      "options": options, "projectFolder": project_folder,
+                                     "mediaDir": str(media_dir) if media_dir else None,
                                      "cancelPath": str(cancel_path), "requireValidation": require_validation}),
                          encoding="utf-8")
     script = Path(worker_script or Path(__file__).with_name("render_worker.py"))
@@ -424,7 +425,8 @@ def do_job(job_id, payload):
                 update(52, f"Importing {len(used_video_ids)} used videos into Resolve")
                 run_resolve_worker(resolve_clips, render_mix, output_path, width, height, fps, options,
                                    payload.get("projectFolder", ""), cancelled, update, temp,
-                                   require_validation=not skip_checks)
+                                   require_validation=not skip_checks,
+                                   media_dir=project_media_dir or Path(temp) / "resolve-media")
                 log_job_event(state, f"Render complete: {len(clips)} timeline clips from "
                                     f"{len(used_video_ids)} source videos; output {output_path}")
                 state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,

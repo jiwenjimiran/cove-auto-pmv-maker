@@ -103,7 +103,7 @@ var optionHelp = {
   songTrimEnd: "Optional ending point in the backing song, in seconds. Leave blank to use the full track.",
   outputFps: "Choose Auto for 60 fps only when every eligible source is 60 fps, otherwise 30 fps. Or select a fixed frame rate.",
   outputCodec: "Render an MP4 with H.264, H.265, or AV1. AV1 uses hardware encoding only. If Resolve rejects direct AV1, an NVIDIA encoder converts a temporary high-quality Resolve render. Create checks availability before queueing.",
-  reencodeIncompatibleContainers: "Convert only selected ranges from Windows Media (WMV/ASF) sources to temporary H.264 clips that Resolve can import. Saved projects keep these clips beside the .drp. Turning this off excludes those sources.",
+  reencodeIncompatibleContainers: "Re-encode selected WMV/ASF ranges as H.264. If Resolve rejects an MP4 that actually contains Matroska data, remux selected ranges into MP4 without re-encoding its video. Saved projects keep these clips beside the .drp.",
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
   colorTreatment: "None leaves source colors alone. Match brightness samples the first two seconds of each used video. Warm and Cool apply subtle color shifts.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",

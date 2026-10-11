@@ -42,6 +42,7 @@ class CompanionApiTests(unittest.TestCase):
                 script.write_text('import json, sys, time\n'
                                   'from pathlib import Path\n'
                                   'assert json.loads(Path(sys.argv[1]).read_text())["width"] == 1920\n'
+                                  'assert json.loads(Path(sys.argv[1]).read_text())["mediaDir"]\n'
                                   'print(json.dumps({"progress": 52.2, "message": "Importing media"}), flush=True)\n'
                                   'time.sleep(0.5)\n', encoding="utf-8")
                 started = threading.Event()
@@ -56,7 +57,7 @@ class CompanionApiTests(unittest.TestCase):
                     try:
                         server.run_resolve_worker([], "song.wav", "out.mp4", 1920, 1080, 30,
                                                   {}, "", threading.Event(), progress, root,
-                                                  worker_script=script)
+                                                  worker_script=script, media_dir=Path(root) / "media")
                     except Exception as exc:
                         errors.append(exc)
 

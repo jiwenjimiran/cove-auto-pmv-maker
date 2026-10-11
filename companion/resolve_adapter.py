@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from engine import layout_modes, option_range, probe, run
+from media_compat import remux_rejected_containers
 
 MODULES = Path(os.environ.get("RESOLVE_SCRIPT_API", r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting")) / "Modules"
 VALIDATION = Path(__file__).with_name("validated-version.json")
@@ -141,6 +142,13 @@ def media_key(path):
     return os.path.normcase(os.path.realpath(path))
 
 
+class MediaImportError(RuntimeError):
+    def __init__(self, message, missing, imported):
+        super().__init__(message)
+        self.missing = missing
+        self.imported = imported
+
+
 def import_media_items(media_storage, folder, paths, cancel, progress):
     """Import in small groups and resolve delayed or omitted Media Pool entries."""
     imported = []
@@ -182,9 +190,10 @@ def import_media_items(media_storage, folder, paths, cancel, progress):
         example = next((item.GetClipProperty("File Path") for item in imported
                         if item.GetClipProperty("File Path")), "none")
         names = "; ".join(missing[:3])
-        raise RuntimeError(f"Resolve did not import {len(missing)} of {len(paths)} files. "
-                           f"Missing: {names}. First imported path: {example}. "
-                           "Check that these files are online and supported by Resolve Studio.")
+        raise MediaImportError(f"Resolve did not import {len(missing)} of {len(paths)} files. "
+                               f"Missing: {names}. First imported path: {example}. "
+                               "Check that these files are online and supported by Resolve Studio.",
+                               missing, items)
     return items
 
 
@@ -395,7 +404,7 @@ def animate_expansion(item, clip, role, width, height, fps):
 
 
 def render(clips, audio_path, output_path, width, height, fps, options, project_folder, cancel, progress,
-           require_validation=True):
+           require_validation=True, media_dir=None):
     resolve = connect(require_validation=require_validation)
     manager = resolve.GetProjectManager()
     project_name = "PMVMAKER_TMP_" + uuid.uuid4().hex
@@ -404,6 +413,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         raise RuntimeError("Resolve could not create a temporary project. Open an editable project in a local project library, then retry. The scripting API reports database: " + str(manager.GetCurrentDatabase()))
     job_id = None
     work_dir = None
+    compat_dir = None
     try:
         check(project.SetSettings({"timelineResolutionWidth": str(width)}), "timeline width")
         check(project.SetSettings({"timelineResolutionHeight": str(height)}), "timeline height")
@@ -417,7 +427,22 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         for path in paths:
             if not Path(path).is_file():
                 raise RuntimeError("Resolve cannot read " + path)
-        items = import_media_items(media_storage, folder, paths, cancel, progress)
+        try:
+            items = import_media_items(media_storage, folder, paths, cancel, progress)
+        except MediaImportError as exc:
+            if not options.get("reencodeIncompatibleContainers", True):
+                raise
+            if media_dir is None:
+                compat_dir = tempfile.TemporaryDirectory(prefix="pmv-remux-")
+                media_dir = compat_dir.name
+            clips, repaired = remux_rejected_containers(clips, exc.missing, media_dir, cancel, progress)
+            if not repaired or any(media_key(path) not in repaired for path in exc.missing):
+                raise
+            items = exc.imported
+            retry_paths = list(dict.fromkeys(os.path.realpath(clip.path) for clip in clips
+                                             if media_key(clip.path) not in items))
+            items.update(import_media_items(media_storage, folder, retry_paths, cancel,
+                                            lambda _percent, message: progress(52.7, message)))
         source_rates = {}
         source_frames = {}
         for path in {clip.path for clip in clips}:
@@ -680,3 +705,5 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         finally:
             if work_dir is not None:
                 work_dir.cleanup()
+            if compat_dir is not None:
+                compat_dir.cleanup()
