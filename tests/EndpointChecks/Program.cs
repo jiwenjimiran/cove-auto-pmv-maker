@@ -125,6 +125,23 @@ try
         || migrated.GetProperty("outputCodec").GetString() != "av1")
         throw new Exception("Older layout, segment, face, and codec defaults were not migrated.");
 
+    using var saveInclude = await client.PutAsJsonAsync(address + "/api/ext/pmv/settings",
+        new PmvSettings { CompanionMode = "external", CompanionUrl = address, CompanionToken = "test",
+            Defaults = new PmvOptions { SegmentMode = "include", SegmentTagIds = [] } });
+    using var savedIncludeJson = await ReadJson(saveInclude, HttpStatusCode.OK);
+    if (savedIncludeJson.RootElement.GetProperty("defaults").GetProperty("segmentMode").GetString() != "include")
+        throw new Exception("Settings did not accept Include mode without tags.");
+    using var reloadedInclude = await client.GetAsync(address + "/api/ext/pmv/settings");
+    using var reloadedIncludeJson = await ReadJson(reloadedInclude, HttpStatusCode.OK);
+    var savedSegments = reloadedIncludeJson.RootElement.GetProperty("defaults");
+    if (savedSegments.GetProperty("segmentMode").GetString() != "include"
+        || savedSegments.GetProperty("segmentTagIds").GetArrayLength() != 0)
+        throw new Exception("Settings did not persist Include mode without tags.");
+    using var createWithoutTags = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", new PmvRequest());
+    using var createWithoutTagsJson = await ReadJson(createWithoutTags, HttpStatusCode.BadRequest);
+    if (!createWithoutTagsJson.RootElement.GetProperty("message").GetString()!.Contains("at least one segment tag"))
+        throw new Exception("Creating a PMV must still require a tag in Include mode.");
+
     using var validation = await client.GetAsync(address + "/api/ext/pmv/validation");
     using var validationJson = await ReadJson(validation, HttpStatusCode.OK);
     if (validationJson.RootElement.GetProperty("state").GetString() != "failed")
@@ -147,7 +164,8 @@ try
     if (!putJson.RootElement.GetProperty("message").GetString()!.Contains("companion URL"))
         throw new Exception("Settings validation error was missing.");
 
-    using var create = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", new PmvRequest());
+    using var create = await client.PostAsJsonAsync(address + "/api/ext/pmv/create",
+        new PmvRequest { Options = new PmvOptions() });
     using var createJson = await ReadJson(create, HttpStatusCode.BadRequest);
     if (!createJson.RootElement.GetProperty("message").GetString()!.Contains("output folder"))
         throw new Exception("Create validation error was missing.");

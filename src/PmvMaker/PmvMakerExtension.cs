@@ -34,7 +34,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.28";
+    public string Version => "0.1.29";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -242,7 +242,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 return Results.BadRequest(new { message = "Choose a supported default backing audio source." });
             if (settings.DefaultFaceGender is not ("female" or "male" or "trans" or "all"))
                 return Results.BadRequest(new { message = "Choose a supported face performer gender preset." });
-            if (NewOptionError(settings.Defaults) is { } optionError)
+            if (NewOptionError(settings.Defaults, requireIncludedTags: false) is { } optionError)
                 return Results.BadRequest(new { message = optionError });
             if (settings.CompanionMode is not ("auto" or "external"))
                 return Results.BadRequest(new { message = "Choose automatic or external companion mode." });
@@ -489,7 +489,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private static RouteHandlerBuilder MapDeleteResult(IEndpointRouteBuilder endpoints, string pattern, Func<HttpContext, Task<IResult>> handler)
         => endpoints.MapDelete(pattern, (Delegate)handler);
 
-    private static string? NewOptionError(PmvOptions options)
+    private static string? NewOptionError(PmvOptions options, bool requireIncludedTags = true)
     {
         if (options.LayoutModes is null || options.LayoutModes.Any(mode => mode is not ("grid" or "three-pane" or "full-screen"))
             || options.LayoutModes.Distinct().Count() != options.LayoutModes.Length)
@@ -500,7 +500,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             return "Choose Include or Exclude for segments.";
         if (options.SegmentTagIds is null || options.SegmentTagIds.Length > 100 || options.SegmentTagIds.Any(id => id <= 0))
             return "Segment list must contain at most 100 valid tags.";
-        if (options.SegmentMode == "include" && options.SegmentTagIds.Length == 0)
+        if (requireIncludedTags && options.SegmentMode == "include" && options.SegmentTagIds.Length == 0)
             return "Include mode needs at least one segment tag.";
         if (options.FaceSimilarityThreshold is < 0.55 or > 0.8 || !double.IsFinite(options.FaceSimilarityThreshold))
             return "Performer face match minimum must be between 55% and 80% SFace similarity.";

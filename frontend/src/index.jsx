@@ -230,7 +230,7 @@ function needsFaceReferences(options) {
   return options.matchSelectedPerformers !== false && sliceMode;
 }
 
-function SegmentTagPicker({ ids, onChange, mode }) {
+function SegmentTagPicker({ ids, onChange, mode, allowEmptyInclude = false }) {
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState([]);
   const [selected, setSelected] = useState([]);
@@ -288,7 +288,7 @@ function SegmentTagPicker({ ids, onChange, mode }) {
     }
   };
   return <fieldset className="pmv-segment-picker"><legend>{mode === "include" ? "Included segment tags" : "Excluded segment tags"}</legend>
-    <p>{mode === "include" ? "Use Cove's full segments with any selected tag. Choose at least one." : "Use every full segment except time covered by a selected tag. Leave empty to use all full segments."}</p>
+    <p>{mode === "include" ? allowEmptyInclude ? "Save Include as a default now; choose a tag before creating a PMV." : "Use Cove's full segments with any selected tag. Choose at least one." : "Use every full segment except time covered by a selected tag. Leave empty to use all full segments."}</p>
     <div ref={rootRef} className="pmv-segment-combobox">
       <div className="pmv-segment-input-wrap">
         {chosen.map(id => {
@@ -317,7 +317,7 @@ function SegmentTagPicker({ ids, onChange, mode }) {
   </fieldset>;
 }
 
-function SegmentSection({ options, setOptions }) {
+function SegmentSection({ options, setOptions, allowEmptyInclude = false }) {
   const mode = options.segmentMode || "exclude";
   const ids = options.segmentTagIds || [];
   return <section className="pmv-segment-section"><div className="pmv-form-heading"><h5>Segments to use</h5></div>
@@ -326,8 +326,8 @@ function SegmentSection({ options, setOptions }) {
         <button key={value} type="button" className={mode === value ? "is-active" : ""}
           aria-pressed={mode === value} onClick={() => setOptions(current => ({ ...current, segmentMode: value }))}>{label}</button>)}
     </div>
-    <SegmentTagPicker ids={ids} mode={mode} onChange={segmentTagIds => setOptions(current => ({ ...current, segmentTagIds }))} />
-    {mode === "include" && ids.length === 0 && <p className="pmv-segment-required" role="status">Choose at least one segment tag to create a PMV.</p>}
+    <SegmentTagPicker ids={ids} mode={mode} allowEmptyInclude={allowEmptyInclude} onChange={segmentTagIds => setOptions(current => ({ ...current, segmentTagIds }))} />
+    {!allowEmptyInclude && mode === "include" && ids.length === 0 && <p className="pmv-segment-required" role="status">Choose at least one segment tag to create a PMV.</p>}
   </section>;
 }
 
@@ -468,10 +468,10 @@ export function PmvSettingsPanel() {
     </section>
     <section className="pmv-panel"><div className="pmv-section-heading"><h4>Job defaults</h4><p>These choices appear in each Create PMV popup and can be changed per job.</p></div>
       <div className="pmv-grid"><Control label="Default backing audio source" help="Choose the audio source shown when Create PMV opens.">{id => <select id={id} value={settings.defaultAudioKind || "cove"} onChange={e => set("defaultAudioKind", e.target.value)}><option value="cove">Cove audio</option><option value="folder">Configured music folder</option><option value="upload">Choose song file</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control></div>
-      <SegmentSection options={defaults} setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)} />
+      <SegmentSection options={defaults} allowEmptyInclude setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)} />
       <OptionForm options={defaults} setOptions={value => set("defaults", typeof value === "function" ? value(defaults) : value)}
         portraitFaceControls={<Control label="Default face performer gender" help="Prefilters performers from each source video by Cove gender metadata when Triple portrait face matching is selected.">{id => <select id={id} value={settings.defaultFaceGender || "female"} onChange={e => set("defaultFaceGender", e.target.value)}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans performers</option><option value="all">All performers</option></select>}</Control>} /></section>
-    <div className="pmv-settings-footer"><button className="pmv-button-primary" disabled={(!automatic && !mappingValid) || (defaults.segmentMode === "include" && !defaults.segmentTagIds?.length)} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); if (automatic) setLocal(await api("/local-companion")); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></div>
+    <div className="pmv-settings-footer"><button className="pmv-button-primary" disabled={!automatic && !mappingValid} onClick={async () => { try { setSettings(await api("/settings", "PUT", settings)); if (automatic) setLocal(await api("/local-companion")); setMessage("Settings saved."); setError(""); } catch (e) { setError(e.message); } }}>Save settings</button></div>
     </>}
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
   </div>;
