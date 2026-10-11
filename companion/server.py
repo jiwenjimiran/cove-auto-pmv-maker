@@ -331,7 +331,8 @@ def run_resolve_worker(clips, audio_path, output_path, width, height, fps, optio
         if cancelled.is_set() or code == 2:
             raise InterruptedError("Resolve render cancelled")
         if code:
-            raise RuntimeError(f"Resolve worker exited with code {code}: " + " | ".join(errors)[-3000:])
+            detail = next((line for line in reversed(errors) if line.strip()), "No worker error details were returned")
+            raise RuntimeError(f"Resolve worker exited with code {code}: " + detail[:3000])
     finally:
         if process.poll() is None:
             process.kill()

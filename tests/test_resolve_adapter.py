@@ -1,4 +1,5 @@
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,10 +7,41 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "companion"))
 import resolve_adapter
-from resolve_adapter import ffmpeg_av1_encoder, select_mp4_codec, select_render_profile, set_item_property, source_frame_range
+from resolve_adapter import ffmpeg_av1_encoder, import_media_items, select_mp4_codec, select_render_profile, set_item_property, source_frame_range
 
 
 class TimelinePropertyTests(unittest.TestCase):
+    def test_import_retries_a_missing_media_pool_file(self):
+        class Item:
+            def __init__(self, path):
+                self.path = path
+            def GetClipProperty(self, key):
+                self.assert_key = key
+                return self.path
+
+        first, second = "C:/media/first.mp4", "C:/media/second.mp4"
+        calls = []
+
+        def add(rows):
+            calls.append([row["media"] for row in rows])
+            return [Item(first)] if len(rows) == 2 else [Item(second)]
+
+        storage = SimpleNamespace(AddItemListToMediaPool=add)
+        folder = SimpleNamespace(GetClipList=lambda: [])
+        with patch("resolve_adapter.time.sleep"):
+            items = import_media_items(storage, folder, [first, second], threading.Event(), lambda *_: None)
+        self.assertEqual(2, len(items))
+        self.assertEqual([[first, second], [second]], calls)
+
+    def test_import_failure_names_missing_path_without_property_dump(self):
+        missing = "C:/media/missing.mp4"
+        storage = SimpleNamespace(AddItemListToMediaPool=lambda _rows: [])
+        folder = SimpleNamespace(GetClipList=lambda: [])
+        with patch("resolve_adapter.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "missing.mp4") as failure:
+                import_media_items(storage, folder, [missing], threading.Event(), lambda *_: None)
+        self.assertLess(len(str(failure.exception)), 1000)
+
     def test_connect_starts_resolve_when_it_is_closed(self):
         resolve = SimpleNamespace(GetVersionString=lambda: "21.1.1", GetProductName=lambda: "DaVinci Resolve Studio")
         api = SimpleNamespace(scriptapp=unittest.mock.Mock(side_effect=[None, None, resolve]))

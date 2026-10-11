@@ -141,6 +141,53 @@ def media_key(path):
     return os.path.normcase(os.path.realpath(path))
 
 
+def import_media_items(media_storage, folder, paths, cancel, progress):
+    """Import in small groups and resolve delayed or omitted Media Pool entries."""
+    imported = []
+    for start in range(0, len(paths), 12):
+        if cancel.is_set():
+            raise InterruptedError("Media import cancelled")
+        batch = paths[start:start + 12]
+        progress(52.2, f"Importing videos into Resolve: {start + 1}-{start + len(batch)} of {len(paths)} files")
+        imported.extend(media_storage.AddItemListToMediaPool([{"media": path} for path in batch]) or [])
+
+    items = {}
+
+    def collect(rows):
+        for item in rows or []:
+            path = item.GetClipProperty("File Path")
+            if path:
+                items[media_key(path)] = item
+
+    collect(imported)
+    collect(folder.GetClipList())
+    missing = [path for path in paths if media_key(path) not in items]
+    for attempt in range(3):
+        if not missing:
+            break
+        # Resolve can finish indexing a batch after AddItemListToMediaPool returns.
+        progress(52.3, f"Waiting for Resolve to index {len(missing)} imported files")
+        time.sleep(attempt + 1)
+        collect(folder.GetClipList())
+        missing = [path for path in paths if media_key(path) not in items]
+    if missing and len(missing) <= 12:
+        for index, path in enumerate(missing, 1):
+            if cancel.is_set():
+                raise InterruptedError("Media import cancelled")
+            progress(52.3, f"Retrying missing Resolve import {index}/{len(missing)}: {Path(path).name}")
+            collect(media_storage.AddItemListToMediaPool([{"media": path}]))
+        collect(folder.GetClipList())
+        missing = [path for path in paths if media_key(path) not in items]
+    if missing:
+        example = next((item.GetClipProperty("File Path") for item in imported
+                        if item.GetClipProperty("File Path")), "none")
+        names = "; ".join(missing[:3])
+        raise RuntimeError(f"Resolve did not import {len(missing)} of {len(paths)} files. "
+                           f"Missing: {names}. First imported path: {example}. "
+                           "Check that these files are online and supported by Resolve Studio.")
+    return items
+
+
 def source_frame_range(source_start, offset, length, source_fps, source_frames):
     """Convert edit seconds to source frames; Resolve interprets these in source timebase."""
     if source_fps <= 0 or source_frames <= 0:
@@ -370,29 +417,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         for path in paths:
             if not Path(path).is_file():
                 raise RuntimeError("Resolve cannot read " + path)
-        imported = []
-        for start in range(0, len(paths), 12):
-            if cancel.is_set():
-                raise InterruptedError("Media import cancelled")
-            batch = paths[start:start + 12]
-            progress(52.2, f"Importing videos into Resolve: {start + 1}-{start + len(batch)} of {len(paths)} files")
-            result = media_storage.AddItemListToMediaPool([{"media": path} for path in batch])
-            if result:
-                imported.extend(result)
-        if len(imported) != len(paths):
-            # Some versions return an existing item only once; resolve by path.
-            imported = folder.GetClipList()
-        items = {}
-        for item in imported:
-            item_path = item.GetClipProperty("File Path")
-            if item_path:
-                items[media_key(item_path)] = item
-        for path in paths:
-            if media_key(path) not in items:
-                sample = imported[0].GetClipProperty() if imported else None
-                raise RuntimeError("Resolve did not import " + path + "; item count: " + str(len(imported or []))
-                                   + "; folder count: " + str(len(folder.GetClipList() or []))
-                                   + "; first properties: " + repr(sample))
+        items = import_media_items(media_storage, folder, paths, cancel, progress)
         source_rates = {}
         source_frames = {}
         for path in {clip.path for clip in clips}:
