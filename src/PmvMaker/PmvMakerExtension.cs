@@ -34,7 +34,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.22";
+    public string Version => "0.1.23";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -323,10 +323,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         }).RequireCovePermission("system.settings.write");
         MapGetResult(endpoints, "/api/ext/pmv/audio", async (HttpContext ctx) =>
         {
-            var q = ctx.Request.Query["q"].ToString();
+            var q = ctx.Request.Query["q"].ToString().Trim().ToLowerInvariant();
             await using var scope = _scopes!.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var rows = await db.Audios.AsNoTracking().Where(a => q == "" || a.Title != null && a.Title.Contains(q))
+            var rows = await db.Audios.AsNoTracking().Where(a => q == "" || a.Title != null && a.Title.ToLower().Contains(q))
                 .OrderBy(a => a.Title).Take(100).Select(a => new { a.Id, a.Title, a.MaxDuration, a.MinPath }).ToListAsync(ctx.RequestAborted);
             var auth = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
             var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;

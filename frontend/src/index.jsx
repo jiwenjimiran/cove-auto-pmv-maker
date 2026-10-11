@@ -346,14 +346,13 @@ function OptionForm({ options, setOptions, portraitFaceControls = null }) {
       </div>
       {!(options.layoutModes || []).length && <small>No modes checked: Full screen will be used.</small>}
     </fieldset>
-    <div className="pmv-grid">
-      {portrait && <Control label="Use vertical videos only" help={optionHelp.useVerticalVideosOnly} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options.useVerticalVideosOnly} onChange={e => set("useVerticalVideosOnly", e.target.checked)} />}</Control>}
+    {portrait && <fieldset className="pmv-layout-choices pmv-portrait-settings"><legend>Triple portrait settings</legend><div className="pmv-grid">
+      <Control label="Use vertical videos only" help={optionHelp.useVerticalVideosOnly} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options.useVerticalVideosOnly} onChange={e => set("useVerticalVideosOnly", e.target.checked)} />}</Control>
       {faceSlices && <Control label="Portrait slice selection mode" help={optionHelp.selectionMode}>{id => <select id={id} value={options.selectionMode || "center"} onChange={e => set("selectionMode", e.target.value)}><option value="random">Random slice</option><option value="center">Center slice</option><option value="face">Face slice</option></select>}</Control>}
       {faceSlices && options.selectionMode === "face" && <Control label="Keep face centered" help={optionHelp.keepFaceCentered} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.keepFaceCentered !== false} onChange={e => set("keepFaceCentered", e.target.checked)} />}</Control>}
       {faceSlices && options.selectionMode === "face" && <Control label="Match performers in each video" help={optionHelp.matchSelectedPerformers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.matchSelectedPerformers !== false} onChange={e => set("matchSelectedPerformers", e.target.checked)} />}</Control>}
-      {portrait && <Control label="Mirror repeated source" help={optionHelp.mirrorRepeatedSource} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.mirrorRepeatedSource !== false} onChange={e => set("mirrorRepeatedSource", e.target.checked)} />}</Control>}
-    </div>
-    {needsFaceReferences(options) && portraitFaceControls}
+      <Control label="Mirror repeated source" help={optionHelp.mirrorRepeatedSource} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.mirrorRepeatedSource !== false} onChange={e => set("mirrorRepeatedSource", e.target.checked)} />}</Control>
+    </div>{needsFaceReferences(options) && portraitFaceControls}</fieldset>}
     <div className="pmv-form-heading"><h5>Creative direction</h5><span>02</span></div>
     <div className="pmv-grid">
       <Control label="Style" help={optionHelp.style}>{id => <><select id={id} value={options.style} onChange={e => setOptions(current => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] }))}>{Object.keys(styleHelp).map(x => <option key={x} value={x}>{x.replaceAll("-", " ")}</option>)}</select><small>{styleHelp[options.style]}</small></>}</Control>
@@ -663,7 +662,7 @@ function PmvDialog({ context, close }) {
     await api("/create", "POST", request);
     audioPlayer.current?.pause(); close();
   } catch (e) { setError(e.message); } finally { setBusy(false); } };
-  const portraitFaceControls = <fieldset className="pmv-face-picker"><legend>Triple portrait faces to follow</legend>
+  const portraitFaceControls = <fieldset className="pmv-face-picker"><legend>Faces to follow</legend>
     <p>Uses linked Cove face data first. If it does not cover the slice, matching uses a Cove face cover or performer portrait. Only performers linked to that video qualify.</p>
     <div className="pmv-grid"><Control label="Select by gender" help="Filters linked performers by Cove metadata. It does not infer gender from video frames.">{id => <select id={id} value={faceGender} onChange={e => setFaceGender(e.target.value)}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans performers</option><option value="all">All performers</option></select>}</Control></div>
     <div className="pmv-face-actions"><button type="button" onClick={() => setFaceIds([...new Set([...(faceIds || []), ...(preview?.performers || []).filter(p => p.hasReference && genderFits(p, faceGender)).map(p => p.id)])])}>Select matching</button><button type="button" onClick={() => setFaceIds([])}>Deselect all</button><small>{faceIds.length} selected</small></div>
