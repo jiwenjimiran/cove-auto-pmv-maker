@@ -256,6 +256,15 @@ class CompanionApiTests(unittest.TestCase):
                 self.assertEqual(denied.exception.code, 401)
                 denied.exception.close()
                 self.assertTrue(json.load(urlopen(request(server.TOKEN), timeout=2))["ok"])
+                legacy = Path(root) / "E030 - Sandra.WMV"
+                legacy.write_bytes(b"existing Windows Media fixture")
+                payload["sources"] = [{"path": str(legacy)}]
+                with self.assertRaises(HTTPError) as unsupported:
+                    urlopen(request(server.TOKEN), timeout=2)
+                self.assertEqual(unsupported.exception.code, 400)
+                self.assertIn("Windows Media", json.load(unsupported.exception)["error"])
+                unsupported.exception.close()
+                payload["sources"] = [{"path": str(source)}]
                 source.unlink()
                 with self.assertRaises(HTTPError) as missing:
                     urlopen(request(server.TOKEN), timeout=2)

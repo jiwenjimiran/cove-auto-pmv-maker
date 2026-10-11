@@ -202,6 +202,8 @@ def preflight(payload):
         path = source.get("path", "")
         if not Path(path).is_file():
             raise ValueError("Resolve cannot read source: " + path)
+        if Path(path).suffix.lower() in {".wmv", ".asf"}:
+            raise ValueError("Resolve cannot import Windows Media source: " + path)
     audio = payload.get("audio") or {}
     if audio.get("kind") == "youtube":
         if shutil.which("yt-dlp") is None:

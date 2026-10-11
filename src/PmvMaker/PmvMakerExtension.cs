@@ -34,7 +34,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.25";
+    public string Version => "0.1.26";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -800,6 +800,15 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var eligible = new List<SourceVideo>();
         foreach (var video in source.Videos)
         {
+            // Resolve ignores ASF/Windows Media files even when the path exists and
+            // FFmpeg can decode them. Exclude them before editing so a large job
+            // cannot spend minutes planning clips it will later fail to import.
+            if (Path.GetExtension(video.Path).Equals(".wmv", StringComparison.OrdinalIgnoreCase)
+                || Path.GetExtension(video.Path).Equals(".asf", StringComparison.OrdinalIgnoreCase))
+            {
+                excluded.Add($"Video {video.Id}: Resolve cannot import Windows Media source ({Path.GetFileName(video.Path)})");
+                continue;
+            }
             var lower = Math.Max(0, options.MinimumTimestampSeconds);
             var upper = video.Duration - Math.Max(0, options.EndBufferSeconds);
             if (upper - lower < options.MinClipSeconds)
