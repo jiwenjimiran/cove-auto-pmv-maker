@@ -20,6 +20,15 @@ from engine import Clip
 
 
 class CompanionApiTests(unittest.TestCase):
+    def test_health_is_passive_unless_launch_is_requested(self):
+        resolve = types.SimpleNamespace(GetProductName=lambda: "DaVinci Resolve Studio", GetVersionString=lambda: "21.1.1")
+        with patch.dict(server.DEPENDENCIES, {"state": "ready"}), patch.object(server.shutil, "which", return_value="tool"), patch.object(server, "connect", return_value=resolve) as connect:
+            self.assertTrue(server.health()["ok"])
+            connect.assert_called_once_with(require_validation=False, allow_launch=False)
+            connect.reset_mock()
+            self.assertTrue(server.health(allow_launch=True)["ok"])
+            connect.assert_called_once_with(require_validation=False, allow_launch=True)
+
     def test_render_worker_restores_face_tracks(self):
         clip = Clip(42, "source.mp4", 10.0, 3.0, 0.0, 0, None, False,
                     face_track=((0.0, 0.4), (2.0, 0.6)))

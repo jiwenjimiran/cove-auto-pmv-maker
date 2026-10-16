@@ -42,3 +42,5 @@ This is a preview release. The Resolve render and compatibility checks have been
 ## Checks
 
 Run `python -m unittest discover tests`, `python -m py_compile companion/*.py`, `dotnet run --project tests/PathChecks/PathChecks.csproj`, `dotnet run --project tests/EndpointChecks/EndpointChecks.csproj`, `dotnet run --project tests/LocalCompanionChecks/LocalCompanionChecks.csproj`, `dotnet build src/PmvMaker/PmvMaker.csproj`, and `cd frontend; npm run build`.
+
+Resolve starts only when you create a PMV or explicitly run the compatibility check. Opening settings, checking connection status, and polling validation status never launch Resolve.

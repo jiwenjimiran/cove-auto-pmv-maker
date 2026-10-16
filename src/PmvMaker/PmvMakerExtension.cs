@@ -34,7 +34,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.29";
+    public string Version => "0.1.30";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -440,7 +440,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             if (modes.Contains("three-pane") && requestedOptions.UseVerticalVideosOnly
                 && !resolved.Videos.Any(video => video.Height > video.Width))
                 return Results.BadRequest(new { message = "Three-pane phases need a portrait video.", exclusions = resolved.Exclusions });
-            var health = await CompanionGetAsync(settings, "health", ctx.RequestAborted);
+            var health = await CompanionGetAsync(settings, "health?launch=1", ctx.RequestAborted);
             if (!health.GetProperty("ok").GetBoolean()) return Results.BadRequest(new { message = "Resolve Studio companion is unhealthy.", health });
             if (!settings.SkipSetupChecks && (!health.TryGetProperty("validated", out var validated) || !validated.GetBoolean()))
                 return Results.BadRequest(new { message = "Run the Resolve compatibility check before creating a PMV." });

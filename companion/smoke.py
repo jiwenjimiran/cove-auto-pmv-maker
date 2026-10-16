@@ -11,7 +11,7 @@ from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, render
 
 
 def main(automated=False, progress=None, limit=None):
-    resolve = connect(require_validation=False)
+    resolve = connect(require_validation=False, allow_launch=True)
     if not resolve.GetProjectManager().GetCurrentDatabase():
         raise RuntimeError("Resolve has no active project library. Open an editable project from a local library in Resolve, then retry the compatibility check.")
     with tempfile.TemporaryDirectory(prefix="pmv-smoke-") as folder:

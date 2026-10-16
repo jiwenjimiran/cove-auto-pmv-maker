@@ -59,13 +59,13 @@ def _launch_resolve():
         raise RuntimeError("Could not start DaVinci Resolve Studio: " + result.stderr[-600:])
 
 
-def connect(require_validation=True):
+def connect(require_validation=True, *, allow_launch=False):
     try:
         import DaVinciResolveScript as api
         resolve = api.scriptapp("Resolve")
     except Exception as exc:
         raise RuntimeError(f"Resolve scripting API unavailable: {exc}") from exc
-    if resolve is None and _auto_launch_supported() and not _resolve_running():
+    if resolve is None and allow_launch and _auto_launch_supported() and not _resolve_running():
         _launch_resolve()
         deadline = time.monotonic() + 120
         while resolve is None and time.monotonic() < deadline:
@@ -74,6 +74,8 @@ def connect(require_validation=True):
         if resolve is None:
             raise RuntimeError("DaVinci Resolve Studio started, but its scripting API did not become ready within two minutes. "
                                "Check that Resolve opened normally and External scripting is set to Local.")
+    if resolve is None and not allow_launch and not _resolve_running():
+        raise RuntimeError("DaVinci Resolve Studio is not running. It will start when you create a PMV or run the compatibility check.")
     if resolve is None:
         raise RuntimeError("Resolve is running but did not accept the scripting connection. "
                            "Select Local in Resolve Preferences > System > General, save, then restart Resolve.")
@@ -405,7 +407,7 @@ def animate_expansion(item, clip, role, width, height, fps):
 
 def render(clips, audio_path, output_path, width, height, fps, options, project_folder, cancel, progress,
            require_validation=True, media_dir=None):
-    resolve = connect(require_validation=require_validation)
+    resolve = connect(require_validation=require_validation, allow_launch=True)
     manager = resolve.GetProjectManager()
     project_name = "PMVMAKER_TMP_" + uuid.uuid4().hex
     project = manager.CreateProject(project_name)

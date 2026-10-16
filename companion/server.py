@@ -157,14 +157,14 @@ def validate_resolve():
             traceback.print_exc()
 
 
-def health():
+def health(*, allow_launch=False):
     if DEPENDENCIES["state"] != "ready":
         return {"ok": False, "error": DEPENDENCIES["message"]}
     missing = [tool for tool in ("ffmpeg", "ffprobe") if shutil.which(tool) is None]
     if missing:
         return {"ok": False, "error": "Missing tools: " + ", ".join(missing)}
     try:
-        resolve = connect(require_validation=False)
+        resolve = connect(require_validation=False, allow_launch=allow_launch)
         product = resolve.GetProductName()
         version = resolve.GetVersionString()
         if "Studio" not in product:
@@ -226,7 +226,7 @@ def preflight(payload):
         project_folder.mkdir(parents=True, exist_ok=True)
     requested_codec = payload.get("outputCodec") or (payload.get("options") or {}).get("outputCodec")
     if requested_codec:
-        resolve = connect(require_validation=False)
+        resolve = connect(require_validation=False, allow_launch=True)
         manager = resolve.GetProjectManager()
         current = manager.GetCurrentProject()
         temporary_name = None
@@ -364,7 +364,7 @@ def do_job(job_id, payload):
                 raise InterruptedError("Cancelled before starting")
             state["state"] = "running"
             update(1, "Checking Resolve and media paths")
-            status = health()
+            status = health(allow_launch=True)
             if not status["ok"]:
                 raise RuntimeError(status["error"])
             skip_checks = bool(payload.get("skipSetupChecks"))
@@ -474,7 +474,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/ready":
             return self.reply(200, {"ok": True})
         if path == "/health":
-            return self.reply(200, health())
+            return self.reply(200, health(allow_launch=parse_qs(urlparse(self.path).query).get("launch") == ["1"]))
         if path == "/validation":
             state = dict(VALIDATION_STATE)
             if state["state"] == "idle":

@@ -477,7 +477,7 @@ function PmvSettingsPanel() {
     } catch (e) {
       setError(e.message);
     }
-  } }, "Check Resolve")), /* @__PURE__ */ React.createElement(HelpAction, { label: "Run Resolve compatibility check", help: "Renders short fixtures to check the installed Resolve version." }, /* @__PURE__ */ React.createElement("button", { type: "button", disabled: !health?.ok || validation?.state === "queued" || validation?.state === "running", onClick: async () => {
+  } }, "Check Resolve")), /* @__PURE__ */ React.createElement(HelpAction, { label: "Run Resolve compatibility check", help: "Renders short fixtures to check the installed Resolve version." }, /* @__PURE__ */ React.createElement("button", { type: "button", disabled: validation?.state === "queued" || validation?.state === "running", onClick: async () => {
     try {
       setValidation(await api("/validation", "POST"));
       setError("");

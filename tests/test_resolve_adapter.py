@@ -53,8 +53,18 @@ class TimelinePropertyTests(unittest.TestCase):
                 patch.object(resolve_adapter, "_resolve_running", return_value=False), \
                 patch.object(resolve_adapter, "_launch_resolve") as launch, \
                 patch.object(resolve_adapter.time, "sleep"):
-            self.assertIs(resolve, resolve_adapter.connect(require_validation=False))
+            self.assertIs(resolve, resolve_adapter.connect(require_validation=False, allow_launch=True))
             launch.assert_called_once()
+
+    def test_passive_connect_does_not_launch_closed_resolve(self):
+        api = SimpleNamespace(scriptapp=lambda _name: None)
+        with patch.dict(sys.modules, {"DaVinciResolveScript": api}), \
+                patch.object(resolve_adapter, "_auto_launch_supported", return_value=True), \
+                patch.object(resolve_adapter, "_resolve_running", return_value=False), \
+                patch.object(resolve_adapter, "_launch_resolve") as launch:
+            with self.assertRaisesRegex(RuntimeError, "not running"):
+                resolve_adapter.connect(require_validation=False)
+            launch.assert_not_called()
 
     def test_connect_does_not_start_another_running_resolve(self):
         api = SimpleNamespace(scriptapp=lambda _name: None)
