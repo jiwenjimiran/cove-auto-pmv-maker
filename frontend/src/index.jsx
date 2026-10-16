@@ -82,7 +82,7 @@ const optionHelp = {
   rotatedClipLengthSeconds: "Maximum source window retained for later excerpts.",
   beatsPerBar: "Auto estimates the song's meter. Set 3, 4, or 6 if needed.",
   style: "Applies a starting set of motion, transition, flash, glitch, and color controls. You can change them below.",
-  sourceAudio: "Muted uses only the backing song. Mixed adds brief source accents. All keeps source audio throughout. The song level stays constant.",
+  sourceAudio: "None uses only the song. Some adds brief clip audio on automatic beat accents. All includes audio throughout every clip. The song level stays constant.",
   pacing: "Sets the slowest and fastest cutting pace. The editor moves within this range as beat spacing changes.",
   beatAdherence: "Higher values move cuts closer to detected song beats and phrase points.",
   sourceDiversity: "Higher values cycle through more different source videos before repeating one.",
@@ -101,8 +101,8 @@ const optionHelp = {
   transitionFamilies: "Cuts switch immediately. Dissolves briefly blend the next clip over the previous one.",
   colorTreatment: "None leaves source colors alone. Match brightness samples the first two seconds of each used video. Warm and Cool apply subtle color shifts.",
   saveProject: "Exports a Resolve .drp project to the project folder, or beside the MP4 if that folder is blank.",
-  scanToCove: "Imports the finished MP4 into Cove after Resolve renders it.",
-  keepPerformers: "Adds performers linked to footage that actually appears in the finished PMV.",
+  scanToCove: "Imports the finished MP4 and queues a normal Cove scan for its cover, preview, sprite sheets, pHash, and MD5. Asset generation runs after the render order in Cove Jobs.",
+  keepPerformers: "Copies the cast of source videos actually used in the PMV. Selected but unused videos contribute no tags. Face records are not required; a used compilation contributes its full cast.",
   keepTags: "Adds tags from timed segments that actually appear in the finished PMV. General video tags are not inherited.",
   addPmvTag: "Adds the PMV tag to the imported video.",
   addAutoPmvTag: "Adds the Auto_PMV tag to the imported video."
@@ -379,13 +379,13 @@ function OptionForm({ options, setOptions, portraitFaceControls = null }) {
 
 
     </div>
+    <Control label="Audio mode" help={optionHelp.sourceAudio}>{id => <select id={id} value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">None · song only</option><option value="mixed">Some · automatic accents</option><option value="all">All · every clip</option></select>}</Control>
     <Control label="Length" help="Use a short comparison preview before rendering the full song.">{id => <select id={id} value={options.previewSeconds || ""} onChange={e => set("previewSeconds", e.target.value ? 25 : null)}><option value="">Full song</option><option value="25">25-second comparison preview</option></select>}</Control>
     <details className="pmv-advanced"><summary>Automatic effects · {effectSections.filter(([key]) => options[key] !== false).length} enabled</summary>
       <p>Timing, strength, and combinations are automatic. Uncheck any section to leave it out.</p>
       <div className="pmv-checkbox-grid">{effectSections.map(([key, label, help]) => <Control key={key} label={label} help={help} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options[key] !== false} onChange={e => set(key, e.target.checked)} />}</Control>)}</div>
     </details>
     <details className="pmv-advanced"><summary>Advanced edit controls</summary><div className="pmv-grid">
-      <Control label="Source audio" help={optionHelp.sourceAudio}>{id => <select id={id} value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">Muted</option><option value="mixed">Mixed · brief accents</option><option value="all">All source audio</option></select>}</Control>
       <Control label="Render codec" help={optionHelp.outputCodec}>{id => <select id={id} value={options.outputCodec || "av1"} onChange={e => set("outputCodec", e.target.value)}><option value="h264">H.264 MP4</option><option value="h265">H.265 MP4</option><option value="av1">AV1 MP4</option></select>}</Control>
       {[["transitionIntensity", "Transition intensity"]].map(([key, label]) => <RangeControl key={key} label={label} help={optionHelp[key]} lower={options[`${key}Min`] ?? 0} upper={options[`${key}Max`] ?? 0} onChange={(lower, upper) => setOptions(current => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper }))} />)}
       <RangeControl label="Clip length (sec)" help={optionHelp.clipLength} lower={options.minClipSeconds} upper={options.maxClipSeconds} minValue={0.25} maxValue={30} step={0.25} onChange={(lower, upper) => setOptions(current => ({ ...current, minClipSeconds: lower, maxClipSeconds: upper }))} />
@@ -785,7 +785,7 @@ function PmvDialog({ context, close }) {
       <Control label="Version name (optional)" help="Included in the output filename alongside the order number and version index.">{id => <input id={id} value={variantName} maxLength={80} placeholder={options.style} onChange={e => setVariantName(e.target.value)} />}</Control>
       <button type="button" disabled={busy || uploading || (cart.length >= 20 && editing === null) || !audioReady || !segmentsReady || !preview?.canCreate} onClick={addOrder}>{editing === null ? "Add order to cart" : "Save version changes"}</button>
       {cart.map((line, index) => <div className="pmv-cart-line" key={index}>
-        <div><strong>{index + 1}. {line.name}</strong><small>{line.songName} · {(line.options.layoutModes?.length ? line.options.layoutModes : ["full-screen"]).join(" + ")} · {line.options.previewSeconds ? "25 sec" : "full song"} · {effectSections.filter(([key]) => line.options[key] !== false).length} effects</small></div>
+        <div><strong>{index + 1}. {line.name}</strong><small>{line.songName} · {(line.options.layoutModes?.length ? line.options.layoutModes : ["full-screen"]).join(" + ")} · {line.options.previewSeconds ? "25 sec" : "full song"} · {effectSections.filter(([key]) => line.options[key] !== false).length} effects · audio: {{ muted: "None", mixed: "Some", all: "All" }[line.options.sourceAudio] || "Some"}</small></div>
         <button type="button" disabled={busy} onClick={() => editOrder(index)}>Edit</button>
         <button type="button" disabled={busy} onClick={() => removeOrder(index)}>Remove</button>
       </div>)}

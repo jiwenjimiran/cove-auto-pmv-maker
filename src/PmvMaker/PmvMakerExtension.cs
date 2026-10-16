@@ -36,7 +36,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.2.2";
+    public string Version => "0.2.3";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -492,6 +492,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static string? NewOptionError(PmvOptions options, bool requireIncludedTags = true)
     {
+        if (options.SourceAudio is not ("muted" or "mixed" or "all"))
+            return "Choose None, Some, or All for audio mode.";
         if (options.PreviewSeconds is not null and not 25)
             return "Preview length must be 25 seconds or full song.";
         if (options.Style is not ("cinematic" or "rhythmic-polish" or "high-energy"))
@@ -613,7 +615,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             }
         }
         if (failures.Count > 0) throw new InvalidOperationException(string.Join("; ", failures));
-        progress.Report(1, $"ORDER{orderNumber}: all {requests.Count} versions complete");
+        progress.Report(1, $"ORDER{orderNumber}: all {requests.Count} versions rendered"
+            + (requests.Any(request => request.Options!.ScanToCove) ? "; full asset scans queued in Cove Jobs" : ""));
     }
 
     private async Task RunAsync(PmvRequest request, PmvSettings settings, CovePrincipal? principal, Cove.Core.Interfaces.IJobProgress progress, CancellationToken ct, ScopeResult? frozenSources = null)
@@ -707,11 +710,15 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 {
                     progress.Report(0.98, "Importing PMV into Cove");
                     logger.LogInformation("[PMV {CompanionJobId}] Importing finished MP4 into Cove", submitted.Id[..Math.Min(8, submitted.Id.Length)]);
-                    var importedId = await scope.ServiceProvider.GetRequiredService<IScanService>().ImportDownloadedVideoAsync(covePath, null, ct);
+                    var scanner = scope.ServiceProvider.GetRequiredService<IScanService>();
+                    var importedId = await scanner.ImportDownloadedVideoAsync(covePath, null, ct);
+                    // Do not await an exclusive scan from inside this exclusive render job.
+                    var scanJobId = scanner.StartScan(CompletedPmvImport.FullScan(covePath));
+                    logger.LogInformation("[PMV {CompanionJobId}] Full asset scan queued: {ScanJobId} (cover, preview, sprites, pHash, MD5)", submitted.Id[..Math.Min(8, submitted.Id.Length)], scanJobId);
                     await ApplyMetadataAsync(db, importedId, state, resolved, options, ct, request.OrderNumber);
                     logger.LogInformation("[PMV {CompanionJobId}] Cove import complete: video {VideoId}", submitted.Id[..Math.Min(8, submitted.Id.Length)], importedId);
                 }
-                progress.Report(1.0, "PMV saved: " + covePath);
+                progress.Report(1.0, (options.ScanToCove ? "PMV saved; full Cove asset scan queued: " : "PMV saved: ") + covePath);
                 return;
             }
         }
@@ -870,9 +877,14 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var used = scope.Videos.Where(v => job.UsedVideoIds?.Contains(v.Id) == true).ToList();
         var tagIds = new HashSet<int>();
         if (options.KeepPerformers)
-            foreach (var id in (NeedsFaceReferences(options)
-                ? job.MatchedPerformerIds ?? [] : used.SelectMany(v => v.PerformerIds).Distinct()))
+        {
+            var performerIds = CompletedPmvImport.Performers(job, scope);
+            var existingPerformers = await db.Set<VideoPerformer>().Where(x => x.VideoId == videoId)
+                .Select(x => x.PerformerId).ToArrayAsync(ct);
+            performerIds.ExceptWith(existingPerformers);
+            foreach (var id in performerIds)
                 db.Set<VideoPerformer>().Add(new VideoPerformer { VideoId = videoId, PerformerId = id });
+        }
         if (options.KeepTags)
             foreach (var id in used.SelectMany(v => v.AllowedSegments ?? v.Segments).Where(s => job.UsedSegmentIds?.Contains(s.Id) == true)
                 .Where(s => s.TagId.HasValue).Select(s => s.TagId!.Value).Distinct())

@@ -23,6 +23,12 @@ The Resolve render and compatibility checks have been exercised with Studio 21.1
 
 ## Current implementation notes
 
+### 0.2.3 — complete imports, source cast, visible audio mode
+
+- **Scan to Cove** now imports the output and queues Cove's normal scan for that file with covers/thumbnails, video previews, sprite sheets (including hover assets), pHash, and MD5 enabled. This follow-up runs in Cove Jobs after the render order releases the exclusive queue; render completion does not mean assets have finished generating.
+- Performer tags copy the cast of source videos actually used in the finished PMV, with no face-data requirement. Selected but unused videos contribute no performers. A used compilation can contribute its full cast. Existing PMVs are not retroactively changed.
+- **Audio mode** is visible in the main creative controls: **None** (song only), **Some** (automatic beat accents), or **All** (audio throughout each clip). Saved settings and comparison-cart variants retain their audio choices.
+
 ### 0.2.2 — fix remote-browser submission over HTTP
 
 Order ID generation now works when opening Cove through a LAN HTTP address. The previous `crypto.randomUUID()` call required a secure browser context and ran outside the error handler, leaving the button stuck on **Queueing order…** without sending a request. IDs now use cryptographically secure `getRandomValues`, and generation failures restore the controls and show an error. Existing submission IDs remain unchanged on retry. After upgrading, reload Cove on the device where you create orders.

@@ -12,6 +12,8 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Logging.Abstractions;
 
+CompletedImportChecks.Run();
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -152,6 +154,20 @@ try
     using var createWithoutTagsJson = await ReadJson(createWithoutTags, HttpStatusCode.BadRequest);
     if (!createWithoutTagsJson.RootElement.GetProperty("message").GetString()!.Contains("at least one segment tag"))
         throw new Exception("Creating a PMV must still require a tag in Include mode.");
+
+    foreach (var mode in new[] { "muted", "mixed", "all" })
+    {
+        using var savedMode = await client.PutAsJsonAsync(address + "/api/ext/pmv/settings",
+            new PmvSettings { CompanionMode = "external", CompanionUrl = address, CompanionToken = "test",
+                Defaults = new PmvOptions { SourceAudio = mode } });
+        using var modeJson = await ReadJson(savedMode, HttpStatusCode.OK);
+        if (modeJson.RootElement.GetProperty("defaults").GetProperty("sourceAudio").GetString() != mode)
+            throw new Exception("Audio mode was not preserved in saved settings.");
+    }
+    using var invalidMode = await client.PutAsJsonAsync(address + "/api/ext/pmv/settings",
+        new PmvSettings { CompanionMode = "external", CompanionUrl = address, CompanionToken = "test",
+            Defaults = new PmvOptions { SourceAudio = "invalid" } });
+    using var invalidModeJson = await ReadJson(invalidMode, HttpStatusCode.BadRequest);
 
     using var validation = await client.GetAsync(address + "/api/ext/pmv/validation");
     using var validationJson = await ReadJson(validation, HttpStatusCode.OK);

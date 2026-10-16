@@ -25,6 +25,8 @@ class MediaPipelineTests(unittest.TestCase):
             self.assertGreater(len(beat_grid(song, 0, 3)), 2)
             clip = Clip(1, video, 0, 1.5, 0.5, 0, None, True)
             measurements = {}
+            late_source_levels = {}
+            early_source_levels = {}
             for mode in ("muted", "mixed", "all"):
                 folder = Path(root) / mode
                 folder.mkdir()
@@ -37,9 +39,22 @@ class MediaPipelineTests(unittest.TestCase):
                 values = array.array("h")
                 values.frombytes(raw)
                 measurements[mode] = sum(abs(v) for v in values) / len(values)
+                # Measure the source's 660 Hz tone separately from the backing
+                # song. All must retain it beyond Some's short accent window.
+                def source_level(start, end):
+                    samples = values[int(start * 48000) * 2:int(end * 48000) * 2:2]
+                    real = sum(v * math.cos(2 * math.pi * 660 * n / 48000) for n, v in enumerate(samples))
+                    imag = sum(v * math.sin(2 * math.pi * 660 * n / 48000) for n, v in enumerate(samples))
+                    return math.hypot(real, imag) / len(samples)
+                early_source_levels[mode] = source_level(0.6, 0.8)
+                late_source_levels[mode] = source_level(1.4, 1.6)
                 self.assertLessEqual(max(abs(v) for v in values), 32767)
             self.assertGreater(measurements["mixed"], measurements["muted"])
             self.assertGreater(measurements["all"], measurements["mixed"])
+            self.assertGreater(early_source_levels["mixed"], early_source_levels["muted"] + 100)
+            self.assertLess(late_source_levels["muted"], 5)
+            self.assertLess(late_source_levels["mixed"], 5)
+            self.assertGreater(late_source_levels["all"], 100)
 
     def test_long_mix_keeps_accents_after_eighty_cuts(self):
         with tempfile.TemporaryDirectory() as root:
