@@ -13,14 +13,20 @@ from dataclasses import replace
 from pathlib import Path
 
 from engine import run, probe
+from creative_pixels import (affine_motion, anamorphic, glow, interpolate, light_rays,
+                             optical_flow_pair, outline_echo, person_mask, replace_sky,
+                             sky_mask, swirly_bokeh, video_call, ease)
 
 FEATURES = ("automaticPacing", "beatPunch", "cameraDrift", "impactRecoil", "speedRamps",
             "motionEcho", "highlightBloom", "rgbSplit", "freezeAccents", "smartFraming",
-            "actionSync", "motionMatching", "colorPolish")
+            "actionSync", "motionMatching", "colorPolish", "slideTransitions", "zoomTransitions",
+            "shakeTransitions", "blurTransitions", "smoothMorph", "swirlyBokeh", "anamorphicFlares",
+            "lightRays", "outlineEcho", "superSlowMotion", "videoCall", "skyReplacement")
+OPTIONAL_FEATURES = ("videoCall", "skyReplacement")
 
 
 def enabled(options, key):
-    return options.get(key, True) is not False
+    return options.get(key, key not in OPTIONAL_FEATURES) is not False
 
 
 def analyze_shot(clip, cancel=None):
@@ -50,24 +56,26 @@ def analyze_shot(clip, cancel=None):
 
 
 def time_knots(duration, hits, cue, options, dominant):
-    """Monotone source-time map with exact endpoints and bounded source use."""
+    """Smooth speed curves with exact selected-range endpoints (no extra footage)."""
     import numpy as np
-    output = np.linspace(0, duration, 17)
+    output = np.linspace(0, duration, 65)
+    mid = (output[:-1] + output[1:]) / 2
+    target = next((hit[0] for hit in hits if duration * .18 < hit[0] < duration * .82), duration / 2)
     source = output.copy()
-    target = hits[0][0] if hits else duration / 2
-    peak = max(.15 * duration, min(.85 * duration, cue.get("peak", duration / 2)))
-    target = max(.2 * duration, min(.8 * duration, target))
-    if enabled(options, "actionSync") and hits and cue.get("motion", 0) > .25:
-        # Limit retiming to keep sparse/uncertain action estimates natural.
-        peak = max(target - duration * .18, min(target + duration * .18, peak))
+    if dominant in ("speedRamps", "superSlowMotion"):
+        # Fast edges settle into slow motion around the musical impact. Integrate
+        # velocity, rather than jumping playback speed at segment boundaries.
+        floor = .085 if dominant == "superSlowMotion" else .22
+        width = duration * (.21 if dominant == "superSlowMotion" else .18)
+        valley = np.exp(-((mid - target) / max(.02, width)) ** 4)
+        rates = 1.8 * (1 - valley) + floor * valley
+        source = np.concatenate(([0], np.cumsum(rates))) / rates.sum() * duration
+    elif enabled(options, "actionSync") and hits and cue.get("motion", 0) > .25:
+        peak = max(target - duration * .18, min(target + duration * .18, cue.get("peak", target)))
         source = np.interp(output, [0, target, duration], [0, peak, duration])
-    if dominant == "speedRamps":
-        weights = 1 + .38 * np.cos(np.linspace(0, 2 * math.pi, 16))
-        source = np.interp(np.concatenate(([0], np.cumsum(weights))) / weights.sum() * duration,
-                           output, source)
-    elif dominant == "freezeAccents":
-        index = min(13, max(2, round(target / duration * 16)))
-        source[index + 1] = source[index]
+    if dominant == "freezeAccents":
+        index = min(56, max(2, round(target / duration * 64)))
+        source[index + 1:index + 4] = source[index]
     source[0], source[-1] = 0, duration
     return list(zip(output.tolist(), source.tolist()))
 
@@ -104,41 +112,45 @@ def direct(clips, beats, options, cancel=None, progress=None):
                 other = result[best]
                 result[i] = replace(other, record_start=current.record_start, accent=current.accent)
                 result[best] = replace(current, record_start=other.record_start, accent=other.accent)
-    plans = []
     last_accent = -10.0
-    vocabulary = [key for key in ("beatPunch", "impactRecoil", "speedRamps", "motionEcho", "rgbSplit", "freezeAccents")
+    vocabulary = [key for key in ("beatPunch", "impactRecoil", "speedRamps", "motionEcho", "rgbSplit", "freezeAccents", "superSlowMotion")
                   if enabled(options, key)]
+    looks = [key for key in ("swirlyBokeh", "anamorphicFlares", "lightRays", "outlineEcho", "videoCall", "skyReplacement")
+             if enabled(options, key)]
     ordered = sorted(enumerate(result), key=lambda pair: (pair[1].record_start, pair[1].pane))
-    decisions = {}
+    decisions, accent_number = {}, int(options.get("randomSeed") or 0) % max(1, len(vocabulary))
+    style = options.get("style", "rhythmic-polish")
+    strength = {"subtle": .5, "bold": 1.0, "max": 1.3}.get(options.get("effectIntensity", "bold"), 1.0)
+    cooldown = {"cinematic": 1.4, "rhythmic-polish": .8, "high-energy": .5}.get(style, .8)
     for serial, (index, clip) in enumerate(ordered):
         cue = cues[(clip.path, clip.source_start, clip.duration)]
         energy = beats.energy_at(clip.record_start) if hasattr(beats, "energy_at") else .5
         phase = int(clip.record_start / max(2, 240 / max(60, getattr(beats, "tempo", 120))))
         count = 4 if clip.layout_role == "grid" else 3 if clip.layout_role == "three-pane" else 1
         leader = clip.pane == phase % count
-        hits = [(float(t - clip.record_start), beats.strength_at(t) if hasattr(beats, "strength_at") else .6)
+        hits = [(float(t - clip.record_start), beats.strength_at(t) if hasattr(beats, "strength_at") else .65)
                 for t in beats[1:-1] if clip.record_start <= t < clip.record_start + clip.duration]
-        hits = [hit for hit in hits if hit[1] >= .35][::2]
+        hits = [hit for hit in hits if hit[1] >= .25]
+        if clip.accent and (not hits or hits[0][0] > .12):
+            hits.insert(0, (0.0, max(.65, energy)))
         dominant = None
-        if vocabulary and leader and not clip.underlay and energy >= .42 and hits and clip.record_start - last_accent >= 1.8:
-            band_rows = getattr(beats, "bands", ())
-            band = min(band_rows, key=lambda row: abs(row[0] - clip.record_start - hits[0][0])) if band_rows else None
-            family = ("beatPunch", "speedRamps", "freezeAccents") if band and band[1] > band[3] else ("impactRecoil", "motionEcho", "rgbSplit")
-            choices = [key for key in vocabulary if key in family] or vocabulary
-            dominant = choices[phase % len(choices)]
-            if dominant in ("speedRamps", "freezeAccents") and (clip.expansion_from is not None or cue["motion"] < .25):
+        if vocabulary and leader and not clip.underlay and hits and clip.record_start - last_accent >= cooldown:
+            dominant = vocabulary[accent_number % len(vocabulary)]
+            accent_number += 1
+            if dominant in ("speedRamps", "superSlowMotion", "freezeAccents") and (clip.expansion_from is not None or cue["motion"] < .2):
                 dominant = "beatPunch" if enabled(options, "beatPunch") else None
             if dominant:
                 last_accent = clip.record_start
-        style = options.get("style", "rhythmic-polish")
-        strength = {"cinematic": .55, "rhythmic-polish": .75, "high-energy": 1.0}.get(style, .75)
-        decisions[index] = {"dominant": dominant, "hits": hits, "energy": energy,
+        look = looks[serial % len(looks)] if looks and leader and not clip.underlay else None
+        if look == "skyReplacement" and cue["motion"] > 1.2:
+            look = None
+        decisions[index] = {"dominant": dominant, "look": look, "hits": hits, "energy": energy,
                             "strength": strength, "leader": leader, "cue": cue,
                             "drift": enabled(options, "cameraDrift"), "pullback": phase % 2 == 1,
-                            "bloom": enabled(options, "highlightBloom") and leader and energy > .65,
+                            "bloom": enabled(options, "highlightBloom") and not clip.underlay,
                             "framing": enabled(options, "smartFraming"),
                             "color": enabled(options, "colorPolish"), "palette": style,
-                            "scale": (0, .035, .065)[phase % 3] if enabled(options, "smartFraming") else 0,
+                            "scale": (0, .04, .08)[phase % 3] if enabled(options, "smartFraming") else 0,
                             "direction": 1 if cue["direction"] >= 0 else -1,
                             "knots": ([(0, 0), (clip.duration, clip.duration)] if clip.underlay or clip.expansion_from is not None
                                       else time_knots(clip.duration, hits, cue, options, dominant))}
@@ -152,40 +164,61 @@ def pulse(at, hits):
 def image_effect(frame, at, duration, plan, center=.5, previous=None):
     import cv2
     import numpy as np
-    h, w = frame.shape[:2]
-    power = pulse(at, plan["hits"]) * plan["strength"]
-    dominant = plan["dominant"]
-    fraction = at / max(duration, .01)
-    drift = (.025 * (1 - fraction if plan.get("pullback") else fraction)) if plan["drift"] else 0
-    zoom = 1 + (.008 if plan["drift"] else 0) + plan["scale"] + drift + (.065 * power if dominant == "beatPunch" else 0)
-    angle = .5 * power * math.sin(at * 63) if dominant == "impactRecoil" else 0
-    if dominant == "impactRecoil":
-        zoom += .025
-    matrix = cv2.getRotationMatrix2D((w * center, h * .5), angle, zoom)
-    if plan["drift"]:
-        matrix[0, 2] += w * .006 * math.sin(at / max(duration, .01) * math.pi) * plan["direction"]
-    if dominant == "impactRecoil":
-        matrix[0, 2] += w * .004 * power * math.sin(at * 91)
-        matrix[1, 2] += h * .003 * power * math.cos(at * 71)
-    out = cv2.warpAffine(frame, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+    strength = plan["strength"]
+    power = pulse(at, plan["hits"]) * strength
+    dominant, look = plan["dominant"], plan.get("look")
+    out = frame
+    if look == "swirlyBokeh":
+        out = swirly_bokeh(out, person_mask(out), .8 + strength * .4)
+    elif look == "skyReplacement":
+        mask = sky_mask(out)
+        if mask.any():
+            mask *= 1 - person_mask(out)
+            out = replace_sky(out, mask)
+
+    def camera(time):
+        fraction = ease(time / max(duration, .01))
+        kick = pulse(time, plan["hits"]) * strength
+        drift = .04 * (1 - fraction if plan.get("pullback") else fraction) if plan["drift"] else 0
+        zoom = 1 + plan["scale"] + drift + (.22 * kick if dominant == "beatPunch" else 0)
+        angle, dx, dy = 0, 0, 0
+        if plan["drift"]:
+            zoom += .025
+            dx = .012 * math.sin(fraction * math.pi) * plan["direction"]
+        if dominant == "impactRecoil":
+            zoom += .10 * min(1, kick)
+            angle = 2.4 * kick * math.sin(time * 48)
+            dx += .028 * kick * math.sin(time * 73)
+            dy = .019 * kick * math.cos(time * 57)
+        return zoom, angle, dx, dy, center
+
+    out = affine_motion(out, camera, at, samples=5 if dominant in ("beatPunch", "impactRecoil") else 1)
     if dominant == "motionEcho" and previous is not None:
-        out = cv2.addWeighted(out, 1 - .24 * power, previous, .24 * power, 0)
+        h, w = out.shape[:2]
+        ghost = cv2.warpAffine(previous, cv2.getRotationMatrix2D((w * center, h / 2), 0, 1.05), (w, h), borderMode=cv2.BORDER_REFLECT_101)
+        amount = min(.48, .42 * power)
+        out = cv2.addWeighted(out, 1 - amount, ghost, amount, 0)
     if dominant == "rgbSplit" and power > .05:
-        offset = max(1, round(w * .002 * power))
+        offset = max(1, round(out.shape[1] * .008 * power))
         out[:, offset:, 2] = out[:, :-offset, 2].copy()
         out[:, :-offset, 0] = out[:, offset:, 0].copy()
     if plan["color"]:
         gain = max(.87, min(1.14, 115 / max(40, plan["cue"]["luma"])))
-        values = out.astype(np.float32) / 255
-        # Gentle contrast around mid-gray, with smooth shoulder protection.
-        values = np.clip((values * gain - .5) * 1.035 + .5, 0, 1)
+        values = np.clip((out.astype(np.float32) / 255 * gain - .5) * 1.045 + .5, 0, 1)
         palette = {"cinematic": (.99, 1, 1.012), "high-energy": (1.012, 1, .995)}.get(plan.get("palette"), (1, 1, 1))
-        values = np.clip(values * np.asarray(palette), 0, 1)
-        out = (values * 255).astype(np.uint8)
-    if plan["bloom"] and power > .01:
-        highlights = np.maximum(out.astype(np.float32) - 165, 0)
-        glow = cv2.GaussianBlur(highlights, (0, 0), max(1, w / 180))
-        out = np.clip(out.astype(np.float32) + glow * .32 * power, 0, 255).astype(np.uint8)
+        out = (np.clip(values * np.asarray(palette), 0, 1) * 255).astype(np.uint8)
+    # A persistent soft glow, with the beat adding emphasis rather than being
+    # the only time glow is visible.
+    if plan["bloom"]:
+        out = glow(out, strength * (.65 + .25 * min(1, power)))
+    if look == "anamorphicFlares":
+        out = anamorphic(out, strength)
+    elif look == "lightRays":
+        out = light_rays(out, strength)
+    elif look == "outlineEcho":
+        out = outline_echo(out, min(1, .25 + power))
+    elif look == "videoCall":
+        out = video_call(out, ease(min(at, duration - at) / .18))
     return out
 
 
@@ -208,8 +241,14 @@ def _audio_filter(knots):
                 tempos.append("atempo=2")
                 rate /= 2
             tempos.append(f"atempo={rate:.8f}")
-            filters.append(f"[1:a]atrim=start={s0}:end={s1},asetpts=PTS-STARTPTS,"
-                           + ",".join(tempos) + f",aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={duration}[{label}]")
+            # WSOLA needs context around very short ramp intervals. Read it
+            # within the selected clip, stretch, then trim the exact interval.
+            # Padding before atempo also prevents short inputs from failing at EOF.
+            context_start = max(0, s0 - .18)
+            context_end = min(knots[-1][1], s1 + .18)
+            skip = (s0 - context_start) / ((s1 - s0) / duration)
+            filters.append(f"[1:a]atrim=start={context_start}:end={context_end},asetpts=PTS-STARTPTS,apad=pad_dur=0.25,"
+                           + ",".join(tempos) + f",aresample=48000,aformat=channel_layouts=stereo,atrim=start={skip},asetpts=PTS-STARTPTS,apad,atrim=duration={duration}[{label}]")
     return ";".join(filters + ["".join(labels) + f"concat=n={len(labels)}:v=0:a=1[audio]"])
 
 
@@ -227,7 +266,7 @@ def prepare_creative_clips(clips, plans, options, folder, fps, cancel, progress)
         if key in cache and not clip.face_track:
             result.append(replace(clip, path=cache[key], source_start=0))
             continue
-        progress(40 + 10 * index / max(1, len(clips)), f"Animating shot {index + 1}/{len(clips)}: {plan['dominant'] or 'polish'}")
+        progress(40 + 10 * index / max(1, len(clips)), f"Animating shot {index + 1}/{len(clips)}: {plan['dominant'] or 'polish'} + {plan.get('look') or 'glow'}")
         info = probe(clip.path)
         capture = cv2.VideoCapture(clip.path)
         source_fps = capture.get(cv2.CAP_PROP_FPS)
@@ -260,6 +299,7 @@ def prepare_creative_clips(clips, plans, options, folder, fps, cancel, progress)
             monitor.start()
             try:
                 decoded_frames, current_index, previous = {0: first}, 0, None
+                flow_key, flows = None, None
                 max_source = max(0, int(clip.duration * source_fps) - 1)
                 xs, ys = zip(*plan["knots"])
                 for number in range(count):
@@ -278,7 +318,14 @@ def prepare_creative_clips(clips, plans, options, folder, fps, cancel, progress)
                     frame = decoded_frames[desired][:h, :w]
                     fraction = max(0, min(1, source_time * source_fps - desired))
                     if fraction > .01 and desired + 1 in decoded_frames:
-                        frame = cv2.addWeighted(frame, 1 - fraction, decoded_frames[desired + 1][:h, :w], fraction, 0)
+                        next_frame = decoded_frames[desired + 1][:h, :w]
+                        if plan["dominant"] in ("speedRamps", "superSlowMotion"):
+                            if flow_key != desired:
+                                flows = optical_flow_pair(frame, next_frame)
+                                flow_key = desired
+                            frame = interpolate(frame, next_frame, fraction, flows)
+                        else:
+                            frame = cv2.addWeighted(frame, 1 - fraction, next_frame, fraction, 0)
                     decoded_frames = {key: value for key, value in decoded_frames.items() if key >= desired}
                     center = clip.crop_center
                     if clip.face_track:
@@ -299,11 +346,14 @@ def prepare_creative_clips(clips, plans, options, folder, fps, cancel, progress)
                 process.wait()
                 capture.release()
         if any(stream["codec_type"] == "audio" for stream in info["streams"]) and options.get("sourceAudio", "mixed") != "muted":
+            audio_graph = folder / f"shot-{index:05d}-audio.txt"
+            audio_graph.write_text(_audio_filter(plan["knots"]), encoding="utf-8")
             run(["ffmpeg", "-y", "-v", "error", "-i", str(silent), "-ss", str(clip.source_start),
-                 "-t", str(clip.duration), "-i", clip.path, "-filter_complex", _audio_filter(plan["knots"]),
+                 "-t", str(clip.duration), "-i", clip.path, "-filter_complex_script", str(audio_graph),
                  "-map", "0:v", "-map", "[audio]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
                  "-t", str(count / fps), str(target)], cancel=cancel, timeout=180)
             silent.unlink()
+            audio_graph.unlink(missing_ok=True)
         else:
             silent.replace(target)
         error_path.unlink(missing_ok=True)

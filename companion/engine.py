@@ -145,6 +145,7 @@ class Clip:
     expansion_duration: float = 0.0
     underlay: bool = False
     expansion_layout: str = ""
+    transition_overlay: bool = False
 
 
 def option_range(options, key, phase, default):
@@ -351,7 +352,7 @@ def mix_audio(song, clips, options, temp, duration, trim_start=0, cancel=None):
     mode = options.get("sourceAudio", "mixed")
     filters = ["[0:a]aresample=48000,volume=0.78,atrim=duration=%f,asetpts=PTS-STARTPTS[song]" % duration]
     inputs = ["-ss", str(trim_start), "-t", str(duration), "-i", song]
-    selected = [] if mode == "muted" else [c for c in clips if not c.underlay and (mode == "all" or c.pane == 0 and c.accent)]
+    selected = [] if mode == "muted" else [c for c in clips if not c.underlay and not c.transition_overlay and (mode == "all" or c.pane == 0 and c.accent)]
     # A mirrored outside pair is one source event, not two audio accents.
     selected = list({(c.path, round(c.source_start, 3), round(c.record_start, 3)): c
                      for c in selected if not c.mirrored}.values())

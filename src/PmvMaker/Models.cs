@@ -31,6 +31,20 @@ public sealed class PmvSettings
 
 public sealed class PmvOptions
 {
+    public string EffectIntensity { get; set; } = "bold";
+    public bool SlideTransitions { get; set; } = true;
+    public bool ZoomTransitions { get; set; } = true;
+    public bool ShakeTransitions { get; set; } = true;
+    public bool BlurTransitions { get; set; } = true;
+    public bool SmoothMorph { get; set; } = true;
+    public bool SwirlyBokeh { get; set; } = true;
+    public bool AnamorphicFlares { get; set; } = true;
+    public bool LightRays { get; set; } = true;
+    public bool OutlineEcho { get; set; } = true;
+    public bool SuperSlowMotion { get; set; } = true;
+    public bool VideoCall { get; set; }
+    public bool SkyReplacement { get; set; }
+
     public bool AutomaticPacing { get; set; } = true;
     public bool BeatPunch { get; set; } = true;
     public bool CameraDrift { get; set; } = true;

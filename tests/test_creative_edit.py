@@ -52,7 +52,7 @@ class CreativeTests(unittest.TestCase):
             clip = Clip(1, str(source), .3, 2, 0, 0, None, True)
             beat = BeatGrid([0, .5, 1, 1.5, 2], tempo=120, strengths=[(.5, 1), (1, 1)], energy=[(0, 1)])
             clips, plans = direct([clip], beat, {})
-            for effect in ("speedRamps", "freezeAccents"):
+            for effect in ("speedRamps", "freezeAccents", "superSlowMotion"):
                 plans[0]["dominant"] = effect
                 plans[0]["knots"] = time_knots(2, [(1, 1)], plans[0]["cue"], {}, effect)
                 result = prepare_creative_clips(clips, plans, {}, Path(folder) / effect, 30,

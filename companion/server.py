@@ -26,7 +26,8 @@ from tempfile import TemporaryDirectory, gettempdir
 from urllib.parse import parse_qs, urlparse
 
 from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_modes, mix_audio, output_stem, prepare_audio, reserve_output, sanitize
-from creative_edit import FEATURES, direct, prepare_creative_clips
+from creative_edit import FEATURES, enabled, direct, prepare_creative_clips
+from transition_edit import TRANSITIONS, prepare_transitions
 from media_compat import needs_reencode, prepare_resolve_clips
 from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, select_render_profile
 
@@ -396,7 +397,7 @@ def do_job(job_id, payload):
                                 face_references(payload.get("references") or []),
                                 lambda message: log_job_event(state, message))
                 plans = []
-                if any(options.get(key, True) for key in FEATURES if key != "automaticPacing"):
+                if any(enabled(options, key) for key in FEATURES if key != "automaticPacing" and key not in TRANSITIONS):
                     clips, plans = direct(clips, beats, options, cancelled, update)
                 if cancelled.is_set():
                     raise InterruptedError("Cancelled")
@@ -437,16 +438,30 @@ def do_job(job_id, payload):
                         raise ValueError("Windows Media source selected while re-encoding is disabled")
                     media_dir = project_media_dir or Path(temp) / "resolve-media"
                     resolve_clips = prepare_resolve_clips(resolve_clips, media_dir, cancelled, update)
-                update(52, f"Importing {len(used_video_ids)} used videos into Resolve")
-                render_options = dict(options, creativePrepared=bool(plans), creativeManaged=True)
+                overlays, transitions = prepare_transitions(resolve_clips, beats, options,
+                    (project_media_dir or Path(temp)) / "transitions", width, height, fps, cancelled, update)
+                resolve_clips = [*resolve_clips, *overlays]
+                effect_counts = {}
+                for plan in plans:
+                    for effect in (plan.get("dominant"), plan.get("look"), "highlightBloom" if plan.get("bloom") else None):
+                        if effect:
+                            effect_counts[effect] = effect_counts.get(effect, 0) + 1
+                for transition in transitions:
+                    if not transition.get("skipped"):
+                        key = transition["family"]
+                        effect_counts[key] = effect_counts.get(key, 0) + 1
+                log_job_event(state, "Effect plan: " + ", ".join(f"{key}={count}" for key, count in effect_counts.items()))
+                update(52, f"Importing {len(used_video_ids)} used videos and {len(overlays)} transitions into Resolve")
+                render_options = dict(options, creativePrepared=bool(plans), creativeManaged=True, transitionsManaged=True)
                 run_resolve_worker(resolve_clips, render_mix, output_path, width, height, fps, render_options,
                                    payload.get("projectFolder", ""), cancelled, update, temp,
                                    require_validation=not skip_checks,
                                    media_dir=project_media_dir or Path(temp) / "resolve-media")
-                receipt = {"schema": 1, "orderNumber": payload.get("orderNumber"),
+                receipt = {"schema": 2, "orderNumber": payload.get("orderNumber"),
                            "variantIndex": payload.get("variantIndex", 1), "name": payload.get("variantName"),
                            "options": options, "tempo": getattr(beats, "tempo", 0), "beatConfidence": getattr(beats, "confidence", 0),
                            "sections": getattr(beats, "sections", ()), "clips": [asdict(clip) for clip in clips], "effects": plans,
+                           "transitions": transitions, "effectCounts": effect_counts,
                            "outputPath": output_path, "resolveVersion": status.get("version")}
                 Path(output_path).with_suffix(".settings.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
                 log_job_event(state, f"Render complete: {len(clips)} timeline clips from "

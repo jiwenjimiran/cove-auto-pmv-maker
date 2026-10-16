@@ -20,6 +20,8 @@ Copy-Item (Join-Path $source 'bin/Release/net10.0/Cove.PmvMaker.dll') $artifact 
 Copy-Item (Join-Path $source 'dist/*') (Join-Path $artifact 'dist') -Force
 Copy-Item (Join-Path $repo 'companion/*.py') $companion -Force
 Copy-Item (Join-Path $repo 'companion/requirements.txt') $companion -Force
+Copy-Item (Join-Path $repo 'companion/human_segmentation_pphumanseg_2023mar.onnx') $companion -Force
+Copy-Item (Join-Path $repo 'companion/human_segmentation_pphumanseg_LICENSE.txt') $companion -Force
 Copy-Item (Join-Path $repo 'companion/face_detection_yunet_2023mar.onnx') $companion -Force
 Copy-Item (Join-Path $repo 'companion/face_detection_yunet_LICENSE.txt') $companion -Force
 Copy-Item (Join-Path $repo 'companion/face_recognition_sface_2021dec.onnx') $companion -Force
@@ -31,7 +33,7 @@ Copy-Item (Join-Path $repo 'companion/Validate Resolve.cmd') $companion -Force
 Copy-Item (Join-Path $repo 'companion/Pick Folder.ps1') $companion -Force
 Copy-Item (Join-Path $repo 'README.md') $companion -Force
 Copy-Item (Join-Path $repo 'patches/cove-ui.patch') (Join-Path $companion 'patches') -Force
-$companionFiles = @('engine.py', 'creative_edit.py', 'creative_smoke.py', 'advanced_edit.py', 'layout_edit.py', 'source_picker.py', 'music_analysis.py', 'face_analysis.py', 'media_compat.py', 'face_detection_yunet_2023mar.onnx', 'face_detection_yunet_LICENSE.txt', 'face_recognition_sface_2021dec.onnx', 'face_recognition_sface_LICENSE.txt', 'resolve_adapter.py', 'render_worker.py', 'server.py', 'smoke.py', 'requirements.txt',
+$companionFiles = @('engine.py', 'creative_pixels.py', 'transition_edit.py', 'human_segmentation_pphumanseg_2023mar.onnx', 'human_segmentation_pphumanseg_LICENSE.txt', 'creative_edit.py', 'creative_smoke.py', 'advanced_edit.py', 'layout_edit.py', 'source_picker.py', 'music_analysis.py', 'face_analysis.py', 'media_compat.py', 'face_detection_yunet_2023mar.onnx', 'face_detection_yunet_LICENSE.txt', 'face_recognition_sface_2021dec.onnx', 'face_recognition_sface_LICENSE.txt', 'resolve_adapter.py', 'render_worker.py', 'server.py', 'smoke.py', 'requirements.txt',
     'Start-Companion.ps1', 'Start Companion.cmd', 'Start Companion Docker.cmd', 'Validate Resolve.cmd', 'Pick Folder.ps1', 'README.md') |
     ForEach-Object { Join-Path $companion $_ }
 $companionFiles += Join-Path $companion 'patches'

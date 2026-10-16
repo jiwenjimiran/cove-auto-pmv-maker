@@ -23,6 +23,23 @@ The Resolve render and compatibility checks have been exercised with Studio 21.1
 
 ## Current implementation notes
 
+### 0.3.0 — visible effects and two-shot transitions
+
+**Effect strength** is a single Subtle / Bold / Max control (Bold by default). Each effect still has its own checkbox. The director layers a motion accent with a shot treatment, varies the vocabulary, and leaves breathing room according to the editing style. It no longer restricts the whole edit to tiny, isolated beat pulses.
+
+- Eased, motion-blurred **slide**, **zoom**, **shake**, and **directional blur** transitions span both sides of the cut. They composite the whole visible scene, including grid and portrait panes, on a dedicated top track. Existing cell expansions keep their own animation. Song length and cut positions stay fixed.
+- **Cinematic glow** persists between beats. **Anamorphic flares**, **light rays** anchored to highlights, **outline echoes**, stronger shake/recoil, RGB separation, and motion trails provide distinct looks.
+- **Swirly bokeh** uses a bundled person-segmentation model to protect foreground people while applying radial background blur. This does not require Cove face records. Shots where the model cannot identify a person remain unblurred; the mask is an estimate, not Resolve Magic Mask.
+- **Speed ramps** use smooth velocity curves; **super slow motion** adds short slow pockets with optical-flow interpolation and compensating acceleration. Selected source ranges, overall duration, and source audio remain aligned. This uses our OpenCV flow implementation, not Resolve's proprietary Speed Warp. Difficult occlusions can still produce interpolation artifacts.
+- **Smooth morph cuts** use optical flow only between sufficiently similar compositions. Dissimilar shots fall back to an enabled blur transition, or a clean cut when blur is disabled.
+- **Video-call framing** and **sky replacement** are implemented but off by default. Sky replacement keys a large blue-sky region connected to the top of a stable shot, protects detected people, and supplies a generated sunset/cloud background. It does not replace arbitrary skies or require a separately downloaded image.
+- Effects and transitions are baked into selected media and imported into Resolve. Saving a project retains those media beside the `.drp`, including transition overlays. Master videos are untouched. Additional pixel processing and optical flow increase preparation time; progress reports name the current shot and transition.
+- The adjacent settings receipt now includes transition plans and effect-plan counts. Conditional effects can be skipped when the content does not support them. Turning off a section prevents its scheduling. No automatic text effect is added.
+
+Technique references: [Art 3 Studio's effects tutorial](https://www.youtube.com/watch?v=FWpnJiR4f2U), [Jamie Fenn's effects tutorial](https://www.youtube.com/watch?v=E_P-8nRbtOk), and [Blackmagic's description of optical-flow smooth cuts](https://www.blackmagicdesign.com/products/davinciresolve/edit/). The first tutorial informed slide easing/shutter blur, sustained glow, fast zooms, beat-centered shake/blur, and foreground-preserving bokeh. The second informed highlight streaks/rays, additive grayscale outlines, optical-flow retiming/morphs, call framing, and blue-sky keying. These are original automated implementations, not copies of the creators' preset packs.
+
+Person segmentation: [OpenCV Zoo PP-HumanSeg](https://github.com/opencv/opencv_zoo/tree/main/models/human_segmentation_pphumanseg), copyright PaddlePaddle Authors, Apache-2.0 (license included). Bundled ONNX SHA-256: `552d8a984054e59b5d773d24b9b12022b22046ceb2bbc4c9aaeaceb36a9ddf24`. No model download is needed at render time.
+
 ### 0.2.3 — complete imports, source cast, visible audio mode
 
 - **Scan to Cove** now imports the output and queues Cove's normal scan for that file with covers/thumbnails, video previews, sprite sheets (including hover assets), pHash, and MD5 enabled. This follow-up runs in Cove Jobs after the render order releases the exclusive queue; render completion does not mean assets have finished generating.

@@ -36,7 +36,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.2.3";
+    public string Version => "0.3.0";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -492,6 +492,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static string? NewOptionError(PmvOptions options, bool requireIncludedTags = true)
     {
+        if (options.EffectIntensity is not ("subtle" or "bold" or "max"))
+            return "Choose Subtle, Bold, or Max for effect strength.";
         if (options.SourceAudio is not ("muted" or "mixed" or "all"))
             return "Choose None, Some, or All for audio mode.";
         if (options.PreviewSeconds is not null and not 25)

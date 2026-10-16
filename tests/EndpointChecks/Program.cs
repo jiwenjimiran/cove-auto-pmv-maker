@@ -303,6 +303,10 @@ try
     if (Math.Abs(progressValues.Values[0] - 0.575) > 0.00001 || progressValues.Values[1] != progressValues.Values[0] || progressValues.Values[2] != 1)
         throw new Exception("Preparation/render progress must occupy non-overlapping parts of the order.");
     Console.WriteLine("Queue acceptance, retry deduplication, preparation cancellation, per-version failures, source caching, and progress passed.");
+    var expressive = JsonSerializer.Deserialize<PmvOptions>("{\"slideTransitions\":false,\"swirlyBokeh\":false,\"effectIntensity\":\"max\"}", new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    if (expressive.SlideTransitions || expressive.SwirlyBokeh || !expressive.ZoomTransitions
+        || !expressive.SuperSlowMotion || expressive.VideoCall || expressive.SkyReplacement || expressive.EffectIntensity != "max")
+        throw new Exception("New effect switches, optional looks, or strength defaults were lost.");
     Console.WriteLine("PMV endpoints, cart bounds, effect toggles, and accepted-order retries passed.");
 }
 finally

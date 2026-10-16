@@ -493,7 +493,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                 luma[path] = source_luma(path)
         else:
             progress(53.5, "Color matching off" if treatment == "natural" else f"Applying {treatment} color tone")
-        transition_on = "dissolve" in (options.get("transitionFamilies") or [])
+        transition_on = not options.get("transitionsManaged") and "dissolve" in (options.get("transitionFamilies") or [])
         style = options.get("style", "rhythmic-polish")
 
         def intensity(key, clip, default):
@@ -510,6 +510,8 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             return clip.layout_role or modes[0]
 
         def main_track(clip):
+            if clip.transition_overlay:
+                return main_tracks + 1
             return main_tracks if hybrid and clip_role(clip) == "full-screen" else clip.pane + 1
 
         def append_part(clip, offset, length, record_start, track_index, opacity=None, composite=None):
@@ -566,12 +568,12 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             else:
                 set_property("Scaling", resolve.SCALE_FILL, "full-screen scaling")
             face_slice = role == "three-pane" and options.get("selectionMode") == "face"
-            if not options.get("creativeManaged") and not face_slice and style == "high-energy" and clip.accent:
+            if not clip.transition_overlay and not options.get("creativeManaged") and not face_slice and style == "high-energy" and clip.accent:
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.1 * motion_intensity)
                 set_property("ZoomX", zoom, "accent zoom X")
                 set_property("ZoomY", zoom, "accent zoom Y")
-            elif not options.get("creativeManaged") and not face_slice and style == "cinematic":
+            elif not clip.transition_overlay and not options.get("creativeManaged") and not face_slice and style == "cinematic":
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.03 * motion_intensity)
                 set_property("ZoomX", zoom, "cinematic zoom X")
@@ -588,7 +590,7 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
         # Main video occupies separate tracks per pane. Dissolves use short incoming
         # slices on overlay tracks with increasing opacity over the outgoing clip.
         placed_clips = 0
-        for track in range(1, main_tracks + 1):
+        for track in range(1, main_tracks + 1 + int(any(c.transition_overlay for c in clips))):
             pane_clips = sorted((clip for clip in clips if main_track(clip) == track), key=lambda clip: clip.record_start)
             for position, clip in enumerate(pane_clips):
                 placed_clips += 1

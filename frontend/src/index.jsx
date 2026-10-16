@@ -58,8 +58,8 @@ export function openPmv(_action, payload) {
 }
 
 const styleHelp = {
-  "rhythmic-polish": "Precise cuts and restrained accents.",
-  "high-energy": "Faster cuts, stronger motion, and controlled accents.",
+  "rhythmic-polish": "Beat-driven cuts, visible motion, and expressive transitions.",
+  "high-energy": "Fast cuts, stacked impact effects, and punchy transitions.",
   cinematic: "Longer shots and softer pacing."
 };
 const stylePresets = {
@@ -206,13 +206,25 @@ function FolderPicker({ kind, current, onChoose, onClose }) {
 }
 
 const effectSections = [
+  ["slideTransitions", "Slide transitions", "Two shots slide past each other with eased movement and motion blur."],
+  ["zoomTransitions", "Zoom transitions", "Fast 2\u00d7 zooms with radial motion blur centered on the cut."],
+  ["shakeTransitions", "Shake transitions", "Camera shake across cuts, with a brief brightness kick and safe edges."],
+  ["blurTransitions", "Blur transitions", "Directional blur builds into a cut and clears smoothly afterward."],
+  ["smoothMorph", "Smooth morph cuts", "Optical-flow morphs between similar shots; unrelated shots keep a blur or clean cut."],
+  ["swirlyBokeh", "Swirly bokeh", "Radial background blur protects people using a bundled segmentation model, without face records."],
+  ["anamorphicFlares", "Anamorphic flares", "Wide horizontal streaks grow from bright highlights."],
+  ["lightRays", "Light rays", "Soft beams extend from actual bright areas in the shot."],
+  ["outlineEcho", "Outline echoes", "An enlarged grayscale edge layer adds a bright outline accent."],
+  ["superSlowMotion", "Super slow motion", "Short optical-flow slow-motion pockets with eased recovery to the beat."],
+  ["videoCall", "Video-call framing", "Optional stylized call-window accents. Off by default."],
+  ["skyReplacement", "Sky replacement", "Optional generated sunset/cloud sky for stable shots with a clear blue sky. Off by default."],
   ["automaticPacing", "Musical pacing", "Builds, peaks, and breathing room follow the song automatically."],
   ["beatPunch", "Beat punches", "Quick subject-centered zooms on selected strong beats."],
   ["cameraDrift", "Camera movement", "Gentle continuous pushes and sideways movement."],
-  ["impactRecoil", "Impact recoil", "Short movement kicks that settle after a hit."],
+  ["impactRecoil", "Camera shake / recoil", "Visible motion-blurred camera kicks that settle after a hit."],
   ["speedRamps", "Speed ramps", "Accelerate and slow selected action without changing the edit length."],
-  ["motionEcho", "Motion echoes", "Brief, subtle trails on selected energetic shots."],
-  ["highlightBloom", "Highlight bloom", "Soft highlight glow on musical peaks."],
+  ["motionEcho", "Motion echoes", "Layered motion trails on selected energetic shots."],
+  ["highlightBloom", "Cinematic glow", "Sustained soft highlight glow with extra emphasis on musical peaks."],
   ["rgbSplit", "Color-edge accents", "Brief RGB separation on occasional hits."],
   ["freezeAccents", "Freeze accents", "Short holds followed by forward motion."],
   ["smartFraming", "Shot variety", "Alternate shot scale while keeping the subject in view."],
@@ -222,7 +234,7 @@ const effectSections = [
 ];
 
 const defaultOptions = {
-  ...Object.fromEntries(effectSections.map(([key]) => [key, true])), previewSeconds: null,
+  ...Object.fromEntries(effectSections.map(([key]) => [key, !["videoCall", "skyReplacement"].includes(key)])), effectIntensity: "bold", previewSeconds: null,
   layout: "full-screen", layoutModes: [], useVerticalVideosOnly: false, selectionMode: "face", segmentMode: "exclude", segmentTagIds: [], keepFaceCentered: true,
   matchSelectedPerformers: true, faceSimilarityThreshold: 0.55, mirrorRepeatedSource: true,
   sampledClipsProgress: true, minimumTimestampSeconds: 0, endBufferSeconds: 0,
@@ -379,6 +391,7 @@ function OptionForm({ options, setOptions, portraitFaceControls = null }) {
 
 
     </div>
+    <Control label="Effect strength" help="One overall level for motion and effects. Timing and combinations follow the song automatically.">{id => <select id={id} value={options.effectIntensity || "bold"} onChange={e => set("effectIntensity", e.target.value)}><option value="subtle">Subtle</option><option value="bold">Bold</option><option value="max">Max</option></select>}</Control>
     <Control label="Audio mode" help={optionHelp.sourceAudio}>{id => <select id={id} value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">None · song only</option><option value="mixed">Some · automatic accents</option><option value="all">All · every clip</option></select>}</Control>
     <Control label="Length" help="Use a short comparison preview before rendering the full song.">{id => <select id={id} value={options.previewSeconds || ""} onChange={e => set("previewSeconds", e.target.value ? 25 : null)}><option value="">Full song</option><option value="25">25-second comparison preview</option></select>}</Control>
     <details className="pmv-advanced"><summary>Automatic effects · {effectSections.filter(([key]) => options[key] !== false).length} enabled</summary>
@@ -387,7 +400,6 @@ function OptionForm({ options, setOptions, portraitFaceControls = null }) {
     </details>
     <details className="pmv-advanced"><summary>Advanced edit controls</summary><div className="pmv-grid">
       <Control label="Render codec" help={optionHelp.outputCodec}>{id => <select id={id} value={options.outputCodec || "av1"} onChange={e => set("outputCodec", e.target.value)}><option value="h264">H.264 MP4</option><option value="h265">H.265 MP4</option><option value="av1">AV1 MP4</option></select>}</Control>
-      {[["transitionIntensity", "Transition intensity"]].map(([key, label]) => <RangeControl key={key} label={label} help={optionHelp[key]} lower={options[`${key}Min`] ?? 0} upper={options[`${key}Max`] ?? 0} onChange={(lower, upper) => setOptions(current => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper }))} />)}
       <RangeControl label="Clip length (sec)" help={optionHelp.clipLength} lower={options.minClipSeconds} upper={options.maxClipSeconds} minValue={0.25} maxValue={30} step={0.25} onChange={(lower, upper) => setOptions(current => ({ ...current, minClipSeconds: lower, maxClipSeconds: upper }))} />
       <Control label="Sampled clips progress through video" help={optionHelp.sampledClipsProgress} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.sampledClipsProgress !== false} onChange={e => set("sampledClipsProgress", e.target.checked)} />}</Control>
       <Control label="Re-encode incompatible containers" help={optionHelp.reencodeIncompatibleContainers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.reencodeIncompatibleContainers !== false} onChange={e => set("reencodeIncompatibleContainers", e.target.checked)} />}</Control>
@@ -398,7 +410,6 @@ function OptionForm({ options, setOptions, portraitFaceControls = null }) {
       {["beatAdherence", "sourceDiversity"].map(key => <Control key={key} label={key === "beatAdherence" ? "Beat adherence" : "Source diversity"} help={optionHelp[key]}>{id => <div className="pmv-range"><input id={id} type="range" min="0" max="1" step="0.05" value={options[key]} onChange={e => set(key, Number(e.target.value))} /><output>{Number(options[key]).toFixed(2)}</output></div>}</Control>)}
       {["songTrimStart", "songTrimEnd"].map((key, i) => <Control key={key} label={["Song start (sec)", "Song end (sec)"][i]} help={optionHelp[key]}>{id => <input id={id} type="number" min="0" step="any" value={options[key] ?? ""} onChange={e => set(key, e.target.value === "" ? null : Number(e.target.value))} />}</Control>)}
       <Control label="FPS override" help={optionHelp.outputFps}>{id => <select id={id} value={options.outputFps ?? ""} onChange={e => set("outputFps", e.target.value ? Number(e.target.value) : null)}><option value="">Auto</option><option value="24">24 fps</option><option value="25">25 fps</option><option value="30">30 fps</option><option value="50">50 fps</option><option value="60">60 fps</option></select>}</Control>
-      <Control label="Transitions" help={optionHelp.transitionFamilies}>{id => <select id={id} value={options.transitionFamilies?.join(",") || "cut"} onChange={e => set("transitionFamilies", e.target.value.split(","))}><option value="cut">Cuts</option><option value="cut,dissolve">Cuts and dissolves</option></select>}</Control>
       <Control label="Color matching" help={optionHelp.colorTreatment}>{id => <select id={id} value={options.colorTreatment} onChange={e => set("colorTreatment", e.target.value)}><option value="natural">None</option><option value="matched">Match brightness</option><option value="warm">Warm</option><option value="cool">Cool</option></select>}</Control>
     </div><div className="pmv-form-heading"><h5>Output and Cove metadata</h5><span>03</span></div><div className="pmv-checkbox-grid">
       {[["saveProject", "Save project (.drp)"], ["scanToCove", "Scan to Cove"], ["keepPerformers", "Keep performers"], ["keepTags", "Keep used segment tags"], ["addPmvTag", "Add PMV tag"], ["addAutoPmvTag", "Add Auto_PMV tag"]].map(([key, label]) => <Control key={key} label={label} help={optionHelp[key]} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={!!options[key]} onChange={e => set(key, e.target.checked)} />}</Control>)}
