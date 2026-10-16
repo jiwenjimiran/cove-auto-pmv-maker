@@ -36,7 +36,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.2.0";
+    public string Version => "0.2.1";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -46,7 +46,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
-        services.AddScoped<SourceResolver>();
+        services.AddScoped<ISourceResolver, SourceResolver>();
         _local ??= new LocalCompanion(Path.Combine(context.DataDirectory, ExtensionId, "companion", "AutoPmvMakerCompanion.zip"));
     }
     public void SetStore(IExtensionStore store) => _store = store;
@@ -390,7 +390,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             var settings = await SettingsAsync(ctx.RequestAborted);
             var options = request.Options ?? settings.Defaults;
             ScopeResult result;
-            try { result = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted, options); }
+            try { result = await scope.ServiceProvider.GetRequiredService<ISourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted, options); }
             catch (UnauthorizedAccessException) { return Results.Forbid(); }
             result = FilterSourcesForLayout(result, options);
             var stem = result.Videos.Count == 0 ? "PMVMAKER_Multi" : PmvNaming.Stem(result, result.Videos, result.Videos.SelectMany(v => v.AllowedSegments ?? v.Segments).Select(s => s.Id).ToArray());
@@ -432,109 +432,40 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             if (existing is not null) return Results.Content(existing, "application/json", statusCode: 202);
             var requests = cart.Orders is null ? new List<PmvRequest> { cart } : cart.Orders.Select(line => new PmvRequest
             { Scope = cart.Scope, Audio = line.Audio, Options = line.Options, FacePerformerIds = line.FacePerformerIds, Name = line.Name }).ToList();
-            var prepared = new List<(PmvRequest Request, PmvSettings Settings, CovePrincipal? Principal, ScopeResult Sources)>();
+            // Acceptance only validates local settings. All media/Resolve work belongs to
+            // the cancellable job, never the HTTP request or global submission gate.
+            var settings = await SettingsAsync(ctx.RequestAborted);
             foreach (var request in requests)
             {
-            if (NewOptionError(request.Options ?? (await SettingsAsync(ctx.RequestAborted)).Defaults) is { } optionError)
-                return Results.BadRequest(new { message = optionError });
-            if (string.IsNullOrWhiteSpace((await SettingsAsync(ctx.RequestAborted)).OutputFolder))
+                request.Options ??= JsonSerializer.Deserialize<PmvOptions>(JsonSerializer.Serialize(settings.Defaults, Json), Json)!;
+                if (NewOptionError(request.Options) is { } optionError)
+                    return Results.BadRequest(new { message = optionError });
+                if (request.Audio is null)
+                    return Results.BadRequest(new { message = "Choose a backing song." });
+            }
+            if (string.IsNullOrWhiteSpace(settings.OutputFolder))
                 return Results.BadRequest(new { message = "Set an output folder first." });
-            if (!OutputInScanRoot((await SettingsAsync(ctx.RequestAborted)).OutputFolder, ctx.RequestServices))
+            if (!OutputInScanRoot(settings.OutputFolder, ctx.RequestServices))
                 return Results.BadRequest(new { message = "Choose an output folder inside a Cove library path that scans videos." });
-            PmvSettings settings;
-            try { settings = await EffectiveSettingsAsync(ctx.RequestAborted); }
-            catch (InvalidOperationException ex) { return Results.BadRequest(new { message = ex.Message }); }
-            if (string.IsNullOrWhiteSpace(settings.CompanionToken)) return Results.BadRequest(new { message = "Set the companion token first." });
-            await using var scope = _scopes!.CreateAsyncScope();
-            var principal = ctx.RequestServices.GetRequiredService<ICurrentPrincipalAccessor>().Current;
-            ScopeResult resolved;
-            try { resolved = await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ctx.RequestAborted, request.Options ?? settings.Defaults); }
-            catch (UnauthorizedAccessException) { return Results.Forbid(); }
-            resolved = FilterSourcesForLayout(resolved, request.Options ?? settings.Defaults);
-            var requestedOptions = request.Options ?? settings.Defaults;
-            if (NeedsFaceReferences(requestedOptions)
-                && !scope.ServiceProvider.GetRequiredService<IAuthorizationService>().Has(principal, "performers.read"))
-                return Results.Forbid();
-            if (resolved.Videos.Count == 0) return Results.BadRequest(new { message = "No eligible sources.", exclusions = resolved.Exclusions });
-            var modes = EffectiveLayoutModes(requestedOptions);
-            if (modes.Contains("grid") && resolved.Videos.Count(video => video.Height <= video.Width) < 4)
-                return Results.BadRequest(new { message = "Grid needs at least four eligible landscape videos.", exclusions = resolved.Exclusions });
-            if (modes.Contains("three-pane") && requestedOptions.UseVerticalVideosOnly
-                && !resolved.Videos.Any(video => video.Height > video.Width))
-                return Results.BadRequest(new { message = "Three-pane phases need a portrait video.", exclusions = resolved.Exclusions });
-            var health = await CompanionGetAsync(settings, "health?launch=1", ctx.RequestAborted);
-            if (!health.GetProperty("ok").GetBoolean()) return Results.BadRequest(new { message = "Resolve Studio companion is unhealthy.", health });
-            if (!settings.SkipSetupChecks && (!health.TryGetProperty("validated", out var validated) || !validated.GetBoolean()))
-                return Results.BadRequest(new { message = "Run the Resolve compatibility check before creating a PMV." });
-            var outputFolder = Path.GetFullPath(settings.OutputFolder);
-            if (request.Options?.ScanToCove ?? settings.Defaults.ScanToCove)
-            {
-                Directory.CreateDirectory(outputFolder);
-                var marker = Path.Combine(outputFolder, ".pmv-preflight-" + Guid.NewGuid().ToString("N"));
-                try { await File.WriteAllTextAsync(marker, "preflight", ctx.RequestAborted); }
-                finally { if (File.Exists(marker)) File.Delete(marker); }
-            }
-            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            object audio;
-            try { audio = await AudioPayloadAsync(request.Audio, settings, db, scope.ServiceProvider.GetRequiredService<IAuthorizationService>(), principal, ctx.RequestAborted); }
-            catch (UnauthorizedAccessException) { return Results.Forbid(); }
-            using var preflight = NewRequest(HttpMethod.Post, settings, "preflight");
-            preflight.Content = JsonBody(new
-            {
-                sources = resolved.Videos.Select(v => new { path = ToHost(v.Path, settings) }),
-                audio,
-                outputFolder = ToHost(settings.OutputFolder, settings),
-                projectFolder = string.IsNullOrWhiteSpace(settings.ProjectFolder) ? "" : ToHost(settings.ProjectFolder, settings),
-                outputCodec = requestedOptions.OutputCodec
-            });
-            using var checkedResponse = await _http.SendAsync(preflight, ctx.RequestAborted);
-            if (!checkedResponse.IsSuccessStatusCode)
-                return Results.BadRequest(new { message = await checkedResponse.Content.ReadAsStringAsync(ctx.RequestAborted) });
-
-            request.Options ??= settings.Defaults;
-            prepared.Add((request, settings, principal, resolved));
-            }
+            if (settings.CompanionMode != "auto" && string.IsNullOrWhiteSpace(settings.CompanionToken))
+                return Results.BadRequest(new { message = "Set the companion token first." });
+            if (cart.Scope?.EntityIds is not { Count: > 0 } || string.IsNullOrWhiteSpace(cart.Scope.EntityType))
+                return Results.BadRequest(new { message = "Select at least one source." });
             if (_store is null) return Results.Problem("Extension storage unavailable.");
             var previousNumber = await _store.GetAsync("last-order-number", ctx.RequestAborted);
             var orderNumber = (long.TryParse(previousNumber, out var parsed) ? parsed : 0) + 1;
             await _store.SetAsync("last-order-number", orderNumber.ToString(), ctx.RequestAborted);
-            for (var index = 0; index < prepared.Count; index++)
+            for (var index = 0; index < requests.Count; index++)
             {
-                prepared[index].Request.OrderNumber = orderNumber;
-                prepared[index].Request.VariantIndex = index + 1;
-                prepared[index].Request.Options!.RandomSeed ??= (int)(orderNumber % int.MaxValue);
+                requests[index].OrderNumber = orderNumber;
+                requests[index].VariantIndex = index + 1;
+                requests[index].Options!.RandomSeed ??= (int)(orderNumber % int.MaxValue);
             }
             var jobs = ctx.RequestServices.GetRequiredService<IJobService>();
-            var id = jobs.Enqueue($"ext:{ExtensionId}:render", $"[PMV] ORDER{orderNumber} · {prepared.Count} versions",
-                async (progress, ct) =>
-                {
-                    var failures = new List<string>();
-                    try
-                    {
-                        for (var index = 0; index < prepared.Count; index++)
-                        {
-                            ct.ThrowIfCancellationRequested();
-                            var line = prepared[index];
-                            try { await RunAsync(line.Request, line.Settings, line.Principal,
-                                new OrderProgress(progress, index, prepared.Count, orderNumber), ct, line.Sources); }
-                            catch (OperationCanceledException) { throw; }
-                            catch (Exception ex) { failures.Add($"Version {index + 1}: {ex.Message}"); }
-                        }
-                    }
-                    finally
-                    {
-                        foreach (var line in prepared.Where(row => row.Request.Audio.Kind == "upload")
-                                     .DistinctBy(row => row.Request.Audio.UploadId))
-                        {
-                            using var delete = NewRequest(HttpMethod.Delete, line.Settings, "uploads/" + line.Request.Audio.UploadId);
-                            try { await _http.SendAsync(delete, CancellationToken.None); } catch { }
-                        }
-                    }
-                    if (failures.Count > 0) throw new InvalidOperationException(string.Join("; ", failures));
-                    progress.Report(1, $"ORDER{orderNumber}: all {prepared.Count} versions complete");
-                }, exclusive: true);
-            var receipt = JsonSerializer.Serialize(new { jobId = id, orderNumber, variants = prepared.Count,
-                message = $"ORDER{orderNumber} queued. Track progress in Cove Jobs." }, Json);
+            var id = jobs.Enqueue($"ext:{ExtensionId}:render", $"[PMV] ORDER{orderNumber} · {requests.Count} versions",
+                (progress, ct) => RunOrderAsync(requests, settings, owner, orderNumber, progress, ct), exclusive: true);
+            var receipt = JsonSerializer.Serialize(new { jobId = id, orderNumber, variants = requests.Count,
+                message = $"ORDER{orderNumber} queued. Preparation and rendering progress are in Cove Jobs." }, Json);
             // Persist after acceptance; retries in this host return the existing job.
             _acceptedOrders[receiptKey] = receipt;
             try { await _store.SetAsync(receiptKey, receipt, CancellationToken.None); }
@@ -599,13 +530,99 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         return content;
     }
 
+    private async Task RunOrderAsync(IReadOnlyList<PmvRequest> requests, PmvSettings settings,
+        CovePrincipal? principal, long orderNumber, Cove.Core.Interfaces.IJobProgress progress, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        progress.Report(0, $"ORDER{orderNumber} · Starting companion");
+        settings = await EffectiveSettingsAsync(ct, settings);
+        var cache = new OrderSourceCache();
+        var failures = new List<string>();
+        try
+        {
+            await using var scope = _scopes!.CreateAsyncScope();
+            var logger = scope.ServiceProvider.GetRequiredService<ILogger<PmvMakerExtension>>();
+            progress.Report(0, $"ORDER{orderNumber} · Checking output folder");
+            logger.LogInformation("[PMV ORDER{OrderNumber}] Preparing {Count} versions in the job queue", orderNumber, requests.Count);
+            if (!OutputInScanRoot(settings.OutputFolder, scope.ServiceProvider))
+                throw new InvalidOperationException("The output folder is no longer inside a Cove video library path.");
+            if (requests.Any(request => request.Options!.ScanToCove))
+            {
+                Directory.CreateDirectory(settings.OutputFolder);
+                var marker = Path.Combine(settings.OutputFolder, ".pmv-preflight-" + Guid.NewGuid().ToString("N"));
+                try { await File.WriteAllTextAsync(marker, "preflight", ct); }
+                finally { if (File.Exists(marker)) File.Delete(marker); }
+            }
+            for (var index = 0; index < requests.Count; index++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var request = requests[index];
+                var options = request.Options!;
+                var versionProgress = new OrderProgress(progress, index, requests.Count, orderNumber);
+                var preparation = new PhaseProgress(versionProgress, 0, 0.15);
+                try
+                {
+                    preparation.Report(0, "Resolving selected videos and segments");
+                    logger.LogInformation("[PMV ORDER{OrderNumber}] Preparing version {Version}", orderNumber, index + 1);
+                    var reused = true;
+                    var sources = await cache.ResolveAsync(request, async token =>
+                    {
+                        reused = false;
+                        return await scope.ServiceProvider.GetRequiredService<ISourceResolver>()
+                            .ResolveAsync(request.Scope, principal, token, options, preparation);
+                    }, ct);
+                    logger.LogInformation("[PMV ORDER{OrderNumber}] Version {Version}: {Action} {Count} source videos",
+                        orderNumber, index + 1, reused ? "Reused" : "Resolved", sources.Videos.Count);
+                    var resolved = FilterSourcesForLayout(sources, options);
+                    preparation.Report(1, "Sources ready; checking layout");
+                    if (NeedsFaceReferences(options)
+                        && !scope.ServiceProvider.GetRequiredService<IAuthorizationService>().Has(principal, "performers.read"))
+                        throw new UnauthorizedAccessException("Performer matching requires performers.read permission.");
+                    if (resolved.Videos.Count == 0)
+                        throw new InvalidOperationException("No eligible sources. " + string.Join("; ", resolved.Exclusions.Take(3)));
+                    var modes = EffectiveLayoutModes(options);
+                    if (modes.Contains("grid") && resolved.Videos.Count(video => video.Height <= video.Width) < 4)
+                        throw new InvalidOperationException("Grid needs at least four eligible landscape videos.");
+                    if (modes.Contains("three-pane") && options.UseVerticalVideosOnly
+                        && !resolved.Videos.Any(video => video.Height > video.Width))
+                        throw new InvalidOperationException("Three-pane phases need a portrait video.");
+                    // The companion checks Resolve, the codec, audio and media paths inside
+                    // its job. Do not repeat those native calls in an HTTP preflight.
+                    await RunAsync(request, settings, principal, new PhaseProgress(versionProgress, 0.15, 0.85), ct, resolved);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    failures.Add($"Version {index + 1}: {ex.Message}");
+                    logger.LogError(ex, "[PMV ORDER{OrderNumber}] Version {Version} failed", orderNumber, index + 1);
+                    versionProgress.Report(1, "Failed: " + ex.Message);
+                }
+            }
+        }
+        finally
+        {
+            foreach (var audio in requests.Select(request => request.Audio)
+                         .Where(audio => audio.Kind == "upload").DistinctBy(audio => audio.UploadId))
+            {
+                try
+                {
+                    using var delete = NewRequest(HttpMethod.Delete, settings, "uploads/" + audio.UploadId);
+                    using var response = await _http.SendAsync(delete, CancellationToken.None);
+                }
+                catch { }
+            }
+        }
+        if (failures.Count > 0) throw new InvalidOperationException(string.Join("; ", failures));
+        progress.Report(1, $"ORDER{orderNumber}: all {requests.Count} versions complete");
+    }
+
     private async Task RunAsync(PmvRequest request, PmvSettings settings, CovePrincipal? principal, Cove.Core.Interfaces.IJobProgress progress, CancellationToken ct, ScopeResult? frozenSources = null)
     {
         await using var scope = _scopes!.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<PmvMakerExtension>>();
         var options = request.Options ?? settings.Defaults;
-        var resolved = frozenSources ?? FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct, options), options);
+        var resolved = frozenSources ?? FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<ISourceResolver>().ResolveAsync(request.Scope, principal, ct, options), options);
         if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
         var activeModes = EffectiveLayoutModes(options);
         var portraitSelection = activeModes.Contains("three-pane") && !options.UseVerticalVideosOnly
@@ -616,6 +633,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         var referenceIds = new List<string>();
         try
         {
+        progress.Report(0, "Preparing performer references and backing song");
         var faceMode = NeedsFaceReferences(options);
         var faceObservations = faceMode
             ? await LoadFaceObservationsAsync(db, resolved, request.FacePerformerIds, settings, ct)
@@ -988,9 +1006,9 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         catch { return new PmvSettings { CompanionMode = LocalCompanion.IsSupported ? "auto" : "external" }; }
     }
 
-    private async Task<PmvSettings> EffectiveSettingsAsync(CancellationToken ct)
+    private async Task<PmvSettings> EffectiveSettingsAsync(CancellationToken ct, PmvSettings? settings = null)
     {
-        var settings = await SettingsAsync(ct);
+        settings ??= await SettingsAsync(ct);
         if (settings.CompanionMode != "auto") return settings;
         if (_local is null) throw new InvalidOperationException("Local companion control is unavailable.");
         var status = await _local.EnsureRunningAsync(ct);

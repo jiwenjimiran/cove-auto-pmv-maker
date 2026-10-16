@@ -1,3 +1,6 @@
+using Cove.Core.Interfaces;
+using Cove.Core.Auth;
+using JobProgress = Cove.Core.Interfaces.IJobProgress;
 using System.Net;
 using System.Net.Http.Json;
 using System.IO.Compression;
@@ -12,14 +15,22 @@ using Microsoft.Extensions.Logging.Abstractions;
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.WebHost.UseUrls("http://127.0.0.1:0");
-var app = builder.Build();
 var fixtureRoot = Directory.CreateTempSubdirectory("pmv-preview-check-").FullName;
 var musicRoot = Directory.CreateDirectory(Path.Combine(fixtureRoot, "music")).FullName;
 await File.WriteAllBytesAsync(Path.Combine(musicRoot, "song.mp3"), [1, 2, 3, 4, 5, 6]);
 await File.WriteAllBytesAsync(Path.Combine(fixtureRoot, "outside.mp3"), [7, 8, 9]);
+var queuedJobs = new CapturedJobs();
+var sourceResolver = new ControlledResolver();
+var configuration = new CoveConfiguration { CovePaths = [new CovePath { Path = fixtureRoot }] };
+builder.Services.AddSingleton<IJobService>(queuedJobs);
+builder.Services.AddSingleton<ISourceResolver>(sourceResolver);
+builder.Services.AddSingleton(configuration);
+builder.Services.AddSingleton<IExtensionServiceScopeFactory, TestScopeFactory>();
+var app = builder.Build();
 var pmvExtension = new PmvMakerExtension();
 pmvExtension.SetStore(new MemoryStore(JsonSerializer.Serialize(new { musicFolder = musicRoot,
     defaults = new { colorTreatment = "matched", layout = "grid-full", segmentTagIds = new[] { 10 }, outputCodec = "h264", faceSimilarityThreshold = 0.45 } })));
+await pmvExtension.InitializeAsync(app.Services);
 pmvExtension.MapEndpoints(app);
 var retryPolls = 0;
 var submissionAttempts = 0;
@@ -189,6 +200,93 @@ try
     var effects = JsonSerializer.Deserialize<PmvOptions>("{\"rgbSplit\":false,\"speedRamps\":false}", new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
     if (effects.RgbSplit || effects.SpeedRamps || !effects.BeatPunch || !effects.ColorPolish)
         throw new Exception("Effect opt-outs and automatic defaults must survive JSON binding.");
+    // A valid submission must be accepted without resolving sources, accessing the
+    // output folder or contacting a companion. The intentionally unreachable URL
+    // would fail the old synchronous preflight implementation.
+    var queuedOutput = Path.Combine(fixtureRoot, "queued-output");
+    pmvExtension.SetStore(new MemoryStore(JsonSerializer.Serialize(new PmvSettings
+    {
+        OutputFolder = queuedOutput, CompanionMode = "external",
+        CompanionUrl = "http://127.0.0.1:1", CompanionToken = "fixture-only"
+    }, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+    var queueSubmission = Guid.NewGuid().ToString("N");
+    var queueRequest = new PmvRequest
+    {
+        SubmissionId = queueSubmission, Scope = new SourceScope { EntityIds = [1] },
+        Orders = [new PmvVariant(), new PmvVariant { Options = new PmvOptions { Style = "high-energy" } }]
+    };
+    using var queueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+    using var queued = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", queueRequest, queueTimeout.Token);
+    using var queuedJson = await ReadJson(queued, HttpStatusCode.Accepted);
+    if (queuedJobs.Work.Count != 1 || sourceResolver.Calls != 0 || Directory.Exists(queuedOutput))
+        throw new Exception("Preparation ran during the acceptance request.");
+    using var queueRetry = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", queueRequest);
+    using var queueRetryJson = await ReadJson(queueRetry, HttpStatusCode.Accepted);
+    if (queuedJobs.Work.Count != 1 || queueRetryJson.RootElement.GetProperty("jobId").GetString() != queuedJson.RootElement.GetProperty("jobId").GetString())
+        throw new Exception("Accepted order retry queued a second job.");
+
+    // Segment resolution starts only when Cove runs the callback. Job cancellation
+    // must propagate to that lookup rather than leave a hidden request running.
+    // Later settings changes must not rewrite the accepted order's output or connection.
+    pmvExtension.SetStore(new MemoryStore("{}"));
+    var stageProgress = new RecordedProgress();
+    using var cancelPreparation = new CancellationTokenSource();
+    var running = queuedJobs.Work[0](stageProgress, cancelPreparation.Token);
+    await Task.WhenAny(running, sourceResolver.Started.Task).WaitAsync(TimeSpan.FromSeconds(5));
+    if (running.IsCompleted) await running;
+    cancelPreparation.Cancel();
+    try { await running; throw new Exception("Preparation ignored cancellation."); }
+    catch (OperationCanceledException) when (cancelPreparation.IsCancellationRequested) { }
+    if (!stageProgress.Messages.Any(message => message.Contains("Resolving selected videos")))
+        throw new Exception("Preparation progress was not visible.");
+
+    // Identical segment selections reuse one lookup across failed versions as well;
+    // layout validation must not prevent the rest of the order from being attempted.
+    sourceResolver.Block = false;
+    var callsBefore = sourceResolver.Calls;
+    try { await queuedJobs.Work[0](new RecordedProgress(), CancellationToken.None); throw new Exception("Empty sources should fail."); }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("Version 1: No eligible sources") && ex.Message.Contains("Version 2: No eligible sources")) { }
+    if (sourceResolver.Calls - callsBefore != 1)
+        throw new Exception("Comparison versions repeated the same source lookup.");
+
+    // A companion-side cancellation also stops all remaining versions, even when
+    // the Cove token has not been cancelled yet.
+    sourceResolver.Failure = new OperationCanceledException("Cancelled by companion");
+    callsBefore = sourceResolver.Calls;
+    try { await queuedJobs.Work[0](new RecordedProgress(), CancellationToken.None); throw new Exception("Cancellation should stop the order."); }
+    catch (OperationCanceledException) { }
+    if (sourceResolver.Calls - callsBefore != 1)
+        throw new Exception("The order continued after a cancellation.");
+    sourceResolver.Failure = null;
+
+    var cache = new OrderSourceCache();
+    var cacheCalls = 0;
+    Task<ScopeResult> Resolve(CancellationToken token) { cacheCalls++; return Task.FromResult(new ScopeResult([], [], null, "video")); }
+    var cacheRequest = new PmvRequest { Scope = new SourceScope { EntityIds = [1] }, Options = new PmvOptions { SegmentTagIds = [2, 1] } };
+    await cache.ResolveAsync(cacheRequest, Resolve, CancellationToken.None);
+    cacheRequest.Options.LayoutModes = ["grid"];
+    cacheRequest.Options.SegmentTagIds = [1, 2, 1];
+    await cache.ResolveAsync(cacheRequest, Resolve, CancellationToken.None);
+    if (cacheCalls != 1) throw new Exception("Layout/effect comparisons should reuse normalized segment selections.");
+    cacheRequest.Options.SegmentMode = "include";
+    await cache.ResolveAsync(cacheRequest, Resolve, CancellationToken.None);
+    cacheRequest.Options.SegmentTagIds = [3];
+    await cache.ResolveAsync(cacheRequest, Resolve, CancellationToken.None);
+    cacheRequest.Scope.EntityIds = [2];
+    await cache.ResolveAsync(cacheRequest, Resolve, CancellationToken.None);
+    if (cacheCalls != 4) throw new Exception("Changed segment mode, tags or source scope reused unrelated sources.");
+    using var cancelledCache = new CancellationTokenSource();
+    cancelledCache.Cancel();
+    try { await cache.ResolveAsync(cacheRequest, Resolve, cancelledCache.Token); throw new Exception("Cached sources ignored cancellation."); }
+    catch (OperationCanceledException) { }
+    var progressValues = new RecordedProgress();
+    var secondVersion = new OrderProgress(progressValues, 1, 2, 42);
+    new PhaseProgress(secondVersion, 0, 0.15).Report(1, "Prepared");
+    new PhaseProgress(secondVersion, 0.15, 0.85).Report(0, "Render starting");
+    new PhaseProgress(secondVersion, 0.15, 0.85).Report(1, "Rendered");
+    if (Math.Abs(progressValues.Values[0] - 0.575) > 0.00001 || progressValues.Values[1] != progressValues.Values[0] || progressValues.Values[2] != 1)
+        throw new Exception("Preparation/render progress must occupy non-overlapping parts of the order.");
+    Console.WriteLine("Queue acceptance, retry deduplication, preparation cancellation, per-version failures, source caching, and progress passed.");
     Console.WriteLine("PMV endpoints, cart bounds, effect toggles, and accepted-order retries passed.");
 }
 finally
@@ -207,9 +305,55 @@ static async Task<JsonDocument> ReadJson(HttpResponseMessage response, HttpStatu
 
 sealed class MemoryStore(string settingsJson) : IExtensionStore
 {
-    private string _settingsJson = settingsJson;
-    public Task<string?> GetAsync(string key, CancellationToken ct = default) => Task.FromResult<string?>(key == "settings" ? _settingsJson : null);
-    public Task SetAsync(string key, string value, CancellationToken ct = default) { if (key == "settings") _settingsJson = value; return Task.CompletedTask; }
-    public Task DeleteAsync(string key, CancellationToken ct = default) { if (key == "settings") _settingsJson = ""; return Task.CompletedTask; }
-    public Task<Dictionary<string, string>> GetAllAsync(CancellationToken ct = default) => Task.FromResult(new Dictionary<string, string> { ["settings"] = _settingsJson });
+    private readonly Dictionary<string, string> _values = new() { ["settings"] = settingsJson };
+    public Task<string?> GetAsync(string key, CancellationToken ct = default) => Task.FromResult(_values.GetValueOrDefault(key));
+    public Task SetAsync(string key, string value, CancellationToken ct = default) { _values[key] = value; return Task.CompletedTask; }
+    public Task DeleteAsync(string key, CancellationToken ct = default) { _values.Remove(key); return Task.CompletedTask; }
+    public Task<Dictionary<string, string>> GetAllAsync(CancellationToken ct = default) => Task.FromResult(new Dictionary<string, string>(_values));
+}
+
+sealed class TestScopeFactory(IServiceScopeFactory factory) : IExtensionServiceScopeFactory
+{
+    public IServiceScope CreateScope() => factory.CreateScope();
+    public AsyncServiceScope CreateAsyncScope() => factory.CreateAsyncScope();
+}
+
+sealed class ControlledResolver : ISourceResolver
+{
+    public int Calls;
+    public bool Block = true;
+    public Exception? Failure;
+    public TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public async Task<ScopeResult> ResolveAsync(SourceScope scope, CovePrincipal? principal, CancellationToken ct,
+        PmvOptions? options = null, JobProgress? progress = null)
+    {
+        Calls++;
+        Started.TrySetResult();
+        if (Failure is not null) throw Failure;
+        if (Block) await Task.Delay(Timeout.Infinite, ct);
+        return new([], [], null, "video");
+    }
+}
+
+sealed class RecordedProgress : JobProgress
+{
+    public readonly List<string> Messages = [];
+    public readonly List<double> Values = [];
+    public void Report(double progress, string? subTask = null) { Values.Add(progress); Messages.Add(subTask ?? ""); }
+}
+
+sealed class CapturedJobs : IJobService
+{
+    public readonly List<Func<JobProgress, CancellationToken, Task>> Work = [];
+    public string Enqueue(string type, string description, Func<JobProgress, CancellationToken, Task> work, bool exclusive = true)
+    {
+        if (!exclusive) throw new Exception("Orders must remain exclusive.");
+        Work.Add(work);
+        return "fixture-job-" + Work.Count;
+    }
+    public bool Cancel(string jobId) => false;
+    public bool ReorderQueued(string jobId, string? beforeJobId) => false;
+    public JobInfo? GetJob(string jobId) => null;
+    public IReadOnlyList<JobInfo> GetAllJobs() => [];
+    public IReadOnlyList<JobInfo> GetJobHistory() => [];
 }

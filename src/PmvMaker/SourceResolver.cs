@@ -9,16 +9,24 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Cove.PmvMaker;
 
+public interface ISourceResolver
+{
+    Task<ScopeResult> ResolveAsync(SourceScope scope, CovePrincipal? principal, CancellationToken ct,
+        PmvOptions? options = null, IJobProgress? progress = null);
+}
+
 public sealed class SourceResolver(CoveContext db, IVideoRepository videoRepository, IAuthorizationService authorization,
-    SegmentSpanResolver spanResolver)
+    SegmentSpanResolver spanResolver) : ISourceResolver
 {
     private static readonly JsonSerializerOptions FilterJson = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public async Task<ScopeResult> ResolveAsync(SourceScope scope, CovePrincipal? principal, CancellationToken ct, PmvOptions? options = null)
+    public async Task<ScopeResult> ResolveAsync(SourceScope scope, CovePrincipal? principal, CancellationToken ct, PmvOptions? options = null, IJobProgress? progress = null)
     {
+        ct.ThrowIfCancellationRequested();
+        progress?.Report(0, "Checking source permissions and selection");
         var ids = scope.EntityIds.Where(id => id > 0).Distinct().ToArray();
         if (ids.Length == 0) throw new ArgumentException("Select at least one source.");
         var kind = scope.EntityType.ToLowerInvariant().TrimEnd('s');
@@ -49,6 +57,7 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
                 _ => await db.Tags.Where(t => t.Id == ids[0]).Select(t => t.Name).FirstOrDefaultAsync(ct)
             } : null;
 
+        progress?.Report(0.05, "Finding selected videos");
         int[] videoIds;
         if (scope.VideoFilter is { } filterJson && kind is "performer" or "studio" or "tag")
         {
@@ -61,6 +70,7 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
                 var (items, total) = await videoRepository.FindAsync(filter,
                     new FindFilter { Q = scope.FindQuery, Page = page, PerPage = 1000 }, ct, expression);
                 matching.AddRange(items.Select(v => v.Id));
+                progress?.Report(0.1, $"Finding selected videos: {matching.Count}/{total}");
                 if (items.Count == 0 || matching.Count >= total) break;
             }
             videoIds = matching.ToArray();
@@ -98,6 +108,7 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
         }
         videoIds = allowed.ToArray();
 
+        progress?.Report(0.15, $"Loading metadata for {videoIds.Length} videos");
         var rows = await db.Videos.AsNoTracking().Where(v => videoIds.Contains(v.Id))
             .Include(v => v.Files).Include(v => v.Studio).Include(v => v.VideoPerformers).ThenInclude(x => x.Performer)
             .AsSplitQuery().ToListAsync(ct);
@@ -108,14 +119,25 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
         // authorized request principal so preview and render use one profile.
         var profileId = (await spanResolver.EnsureDefaultProfileAsync(principal?.UserId, ct)).Id;
         var byVideo = new Dictionary<int, IReadOnlyList<Cove.Core.DTOs.ResolvedSpan>>();
+        var completed = 0;
         foreach (var batch in videoIds.Chunk(100))
+        {
+            ct.ThrowIfCancellationRequested();
+            progress?.Report(0.2 + 0.5 * completed / Math.Max(1, videoIds.Length),
+                $"Resolving Cove segments: {completed}/{videoIds.Length} videos");
             foreach (var (videoId, spans) in await spanResolver.ResolveVideosBatchAsync(batch, profileId, ct))
                 byVideo[videoId] = spans;
+            completed += batch.Length;
+        }
         var nextSpanId = 0;
         var result = new List<SourceVideo>();
         var exclusions = new List<string>();
+        var checkedFiles = 0;
         foreach (var video in rows)
         {
+            ct.ThrowIfCancellationRequested();
+            progress?.Report(0.7 + 0.3 * checkedFiles / Math.Max(1, rows.Count),
+                $"Checking source files: {++checkedFiles}/{rows.Count}");
             if (video.Title?.Contains("PMVMAKER", StringComparison.OrdinalIgnoreCase) == true)
             {
                 exclusions.Add($"Video {video.Id}: title contains PMVMAKER");
@@ -159,6 +181,7 @@ public sealed class SourceResolver(CoveContext db, IVideoRepository videoReposit
                 video.StudioId, video.Studio?.Name, video.VideoPerformers.Select(x => x.PerformerId).ToArray(),
                 video.VideoPerformers.Select(x => x.Performer?.Name ?? "").ToArray(), ranges, savedRanges, allowedRanges));
         }
+        progress?.Report(1, $"Sources ready: {result.Count} eligible videos");
         return new(result, exclusions, launchName, kind);
     }
 

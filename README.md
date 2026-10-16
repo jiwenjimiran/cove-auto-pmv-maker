@@ -17,11 +17,15 @@ The automatic mode uses the companion bundled with the installed extension, so u
 
 The current Cove UI needs [the included host patch](patches/cove-ui.patch) for performer/studio/tag/segment bulk actions and detail Videos-tab actions. It is already applied to the sibling `cove` checkout in this workspace; another sibling checkout can run `git apply ../cove-auto-pmv-maker/patches/cove-ui.patch` from its root, then rebuild the Cove UI. Installing the extension ZIP alone does not change Cove's own Segments selection bar.
 
-The Resolve compatibility check is available from Cove settings after setup and after each Resolve version change. It checks the output format, duration, audio stream, and three-pane colors. Manual inspection of transition quality and beat timing is still needed before relying on the first Studio installation. The companion health endpoint checks scripting access and FFmpeg. Cove refuses to queue a render without a healthy companion or output folder, even when setup checks were skipped.
+The Resolve compatibility check is available from Cove settings after setup and after each Resolve version change. It checks the output format, duration, audio stream, and three-pane colors. Manual inspection of transition quality and beat timing is still needed before relying on the first Studio installation. The companion health endpoint checks scripting access and FFmpeg. Cove checks the output folder setting before accepting an order. Companion health, media access, and export checks run inside the queued job before rendering, even when setup checks were skipped.
 
-This is a preview release. The Resolve render and compatibility checks have been exercised with Studio 21.1.1.10; other versions require their own check.
+The Resolve render and compatibility checks have been exercised with Studio 21.1.1.10; other versions require their own check.
 
 ## Current implementation notes
+
+### 0.2.1 — responsive order queueing
+
+**Process orders** queues promptly; segment lookups, media checks, companion startup, and Resolve preparation run in the cancellable Cove job. Progress shows selection lookup, segment batches, source-file counts, and the current version. Versions sharing the same source scope and segment filters reuse resolved sources, then independently apply layout and timestamp settings. Changed filters get a separate lookup. Resolve/media/codec checks run in the companion job instead of being duplicated before acceptance. Preparation failures appear in Cove Jobs; remaining versions still run after a per-version failure.
 
 ### 0.2.0 — automatic creative editing and comparison orders
 
@@ -29,7 +33,7 @@ Select scenes, open Create PMV, choose a song, and choose a layout/style. The ed
 
 Use **Add order to cart** to snapshot a version, change settings or the backing song, and add another. Edit/remove versions before **Process orders**. A cart supports up to 20 versions against the selected source scope. Each submission receives one persistent order number, and each version gets its own index: `PMVMAKER_ORDER42_name_1.mp4`, `PMVMAKER_ORDER42_name_2.mp4`. Imported outputs also receive a `PMVMAKER_ORDER42` tag. A `.settings.json` receipt beside each MP4 records settings, source ranges, music estimates, and planned effects. Choose the 25-second preview to compare quickly before a full-song order.
 
-Orders preflight every version before queueing, retain each version's resolved sources, use a shared random seed for comparison, and run serially as one cancellable Cove job. Failed versions do not prevent remaining versions from rendering; the final job reports failures. Cancelling stops the current render and remaining versions. Uploaded songs are retained until the entire order exits. Retrying an accepted submission returns the original job while its receipt is available. Draft carts are local to the open dialog and are discarded by Cancel; use Cove Jobs to follow submitted work.
+Orders snapshot settings at submission, resolve sources during preparation, use a shared random seed for comparison, and run serially as one cancellable Cove job. Failed versions do not prevent remaining versions from rendering; the final job reports failures. Cancelling stops the current render and remaining versions. Uploaded songs are retained until the entire order exits. Retrying an accepted submission returns the original job while its receipt is available. Draft carts are local to the open dialog and are discarded by Cancel; use Cove Jobs to follow submitted work.
 
 Effects operate on selected shot ranges before Resolve compositing, so they stay within pane masks. OpenCV performs motion analysis and image transforms; FFmpeg encodes high-quality H.264 intermediates and maps source audio through the same bounded retime. Resolve remains the final renderer, including hardware AV1 output. Generated media is temporary unless Save project is enabled. This processing adds render time and temporary disk use; source masters are never changed. Slow sections use frame blending, not neural Speed Warp. Music sections and action peaks are estimates, with restrained scheduling and cooldowns; optical-flow analysis is a motion cue, not semantic action recognition.
 

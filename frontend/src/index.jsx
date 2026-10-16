@@ -791,7 +791,7 @@ function PmvDialog({ context, close }) {
     </fieldset>
     {(error || settingsError) && <p role="alert">{error || settingsError}</p>}
     </fieldset>
-    <footer><button disabled={busy} onClick={cancel}>Cancel</button><button disabled={busy || uploading || editing !== null || (!cart.length && (!audioReady || !segmentsReady || !preview?.canCreate))} onClick={create}>{busy ? "Checking and queueing…" : cart.length ? `Process orders (${cart.length})` : "Create PMV"}</button></footer>
+    <footer><button disabled={busy} onClick={cancel}>Cancel</button><button disabled={busy || uploading || editing !== null || (!cart.length && (!audioReady || !segmentsReady || !preview?.canCreate))} onClick={create}>{busy ? "Queueing order…" : cart.length ? `Process orders (${cart.length})` : "Create PMV"}</button></footer>
   </div></div>;
 }
 
