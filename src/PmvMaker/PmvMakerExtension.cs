@@ -36,7 +36,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.3.0";
+    public string Version => "0.3.1";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -463,7 +463,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             }
             var jobs = ctx.RequestServices.GetRequiredService<IJobService>();
             var id = jobs.Enqueue($"ext:{ExtensionId}:render", $"[PMV] ORDER{orderNumber} · {requests.Count} versions",
-                (progress, ct) => RunOrderAsync(requests, settings, owner, orderNumber, progress, ct), exclusive: true);
+                (progress, ct) => RunOrderAsync(requests, settings, owner, orderNumber, progress, ct), exclusive: false);
             var receipt = JsonSerializer.Serialize(new { jobId = id, orderNumber, variants = requests.Count,
                 message = $"ORDER{orderNumber} queued. Preparation and rendering progress are in Cove Jobs." }, Json);
             // Persist after acceptance; retries in this host return the existing job.
@@ -541,7 +541,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         progress.Report(0, $"ORDER{orderNumber} · Starting companion");
         settings = await EffectiveSettingsAsync(ct, settings);
         var cache = new OrderSourceCache();
-        var failures = new List<string>();
+        var failures = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
+        var orderProgress = new OrderProgress(progress, requests.Count, orderNumber);
         try
         {
             await using var scope = _scopes!.CreateAsyncScope();
@@ -557,12 +558,14 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 try { await File.WriteAllTextAsync(marker, "preflight", ct); }
                 finally { if (File.Exists(marker)) File.Delete(marker); }
             }
-            for (var index = 0; index < requests.Count; index++)
+            await OrderPipeline.RunAsync(requests.Count, async (index, versionToken) =>
             {
+                var ct = versionToken;
+                await using var versionScope = _scopes!.CreateAsyncScope();
                 ct.ThrowIfCancellationRequested();
                 var request = requests[index];
                 var options = request.Options!;
-                var versionProgress = new OrderProgress(progress, index, requests.Count, orderNumber);
+                var versionProgress = orderProgress.ForVersion(index);
                 var preparation = new PhaseProgress(versionProgress, 0, 0.15);
                 try
                 {
@@ -572,7 +575,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                     var sources = await cache.ResolveAsync(request, async token =>
                     {
                         reused = false;
-                        return await scope.ServiceProvider.GetRequiredService<ISourceResolver>()
+                        return await versionScope.ServiceProvider.GetRequiredService<ISourceResolver>()
                             .ResolveAsync(request.Scope, principal, token, options, preparation);
                     }, ct);
                     logger.LogInformation("[PMV ORDER{OrderNumber}] Version {Version}: {Action} {Count} source videos",
@@ -580,7 +583,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                     var resolved = FilterSourcesForLayout(sources, options);
                     preparation.Report(1, "Sources ready; checking layout");
                     if (NeedsFaceReferences(options)
-                        && !scope.ServiceProvider.GetRequiredService<IAuthorizationService>().Has(principal, "performers.read"))
+                        && !versionScope.ServiceProvider.GetRequiredService<IAuthorizationService>().Has(principal, "performers.read"))
                         throw new UnauthorizedAccessException("Performer matching requires performers.read permission.");
                     if (resolved.Videos.Count == 0)
                         throw new InvalidOperationException("No eligible sources. " + string.Join("; ", resolved.Exclusions.Take(3)));
@@ -597,11 +600,11 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
-                    failures.Add($"Version {index + 1}: {ex.Message}");
+                    failures[index] = $"Version {index + 1}: {ex.Message}";
                     logger.LogError(ex, "[PMV ORDER{OrderNumber}] Version {Version} failed", orderNumber, index + 1);
                     versionProgress.Report(1, "Failed: " + ex.Message);
                 }
-            }
+            }, ct);
         }
         finally
         {
@@ -616,7 +619,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 catch { }
             }
         }
-        if (failures.Count > 0) throw new InvalidOperationException(string.Join("; ", failures));
+        if (failures.Count > 0) throw new InvalidOperationException(string.Join("; ", failures.OrderBy(pair => pair.Key).Select(pair => pair.Value)));
         progress.Report(1, $"ORDER{orderNumber}: all {requests.Count} versions rendered"
             + (requests.Any(request => request.Options!.ScanToCove) ? "; full asset scans queued in Cove Jobs" : ""));
     }
@@ -714,10 +717,11 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                     logger.LogInformation("[PMV {CompanionJobId}] Importing finished MP4 into Cove", submitted.Id[..Math.Min(8, submitted.Id.Length)]);
                     var scanner = scope.ServiceProvider.GetRequiredService<IScanService>();
                     var importedId = await scanner.ImportDownloadedVideoAsync(covePath, null, ct);
-                    // Do not await an exclusive scan from inside this exclusive render job.
+                    // PMV orchestration is non-exclusive: the normal scan can run while
+                    // another version prepares or renders. Finish metadata before queuing it.
+                    await ApplyMetadataAsync(db, importedId, state, resolved, options, ct, request.OrderNumber);
                     var scanJobId = scanner.StartScan(CompletedPmvImport.FullScan(covePath));
                     logger.LogInformation("[PMV {CompanionJobId}] Full asset scan queued: {ScanJobId} (cover, preview, sprites, pHash, MD5)", submitted.Id[..Math.Min(8, submitted.Id.Length)], scanJobId);
-                    await ApplyMetadataAsync(db, importedId, state, resolved, options, ct, request.OrderNumber);
                     logger.LogInformation("[PMV {CompanionJobId}] Cove import complete: video {VideoId}", submitted.Id[..Math.Min(8, submitted.Id.Length)], importedId);
                 }
                 progress.Report(1.0, (options.ScanToCove ? "PMV saved; full Cove asset scan queued: " : "PMV saved: ") + covePath);

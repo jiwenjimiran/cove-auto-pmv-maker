@@ -9,6 +9,7 @@ namespace Cove.PmvMaker;
 // differing source scopes or segment filters must never reuse another selection.
 internal sealed class OrderSourceCache
 {
+    private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, ScopeResult> _sources = new();
 
     public async Task<ScopeResult> ResolveAsync(PmvRequest request,
@@ -21,10 +22,15 @@ internal sealed class OrderSourceCache
             request.Options!.SegmentMode,
             Tags = request.Options.SegmentTagIds.Distinct().Order().ToArray()
         });
-        if (_sources.TryGetValue(key, out var sources)) return sources;
-        sources = await resolve(ct);
-        ct.ThrowIfCancellationRequested();
-        _sources.Add(key, sources);
-        return sources;
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (_sources.TryGetValue(key, out var sources)) return sources;
+            sources = await resolve(ct);
+            ct.ThrowIfCancellationRequested();
+            _sources.Add(key, sources);
+            return sources;
+        }
+        finally { _gate.Release(); }
     }
 }

@@ -141,7 +141,7 @@ class CompanionApiTests(unittest.TestCase):
             server.JOBS.clear()
             server.SUBMISSION_IDS.clear()
 
-    def test_preflight_accepts_hardware_av1_when_resolve_rejects_native_codec(self):
+    def test_render_codec_accepts_hardware_av1_when_resolve_rejects_native_codec(self):
         class Project:
             def GetRenderCodecs(self, format_name):
                 return ({"AV1 8-bit - NVIDIA": "AV1YUV420_8_NVIDIA"} if format_name == "mp4"
@@ -168,6 +168,7 @@ class CompanionApiTests(unittest.TestCase):
             with patch.object(server, "connect", return_value=resolve), \
                     patch("resolve_adapter.ffmpeg_av1_encoder", return_value=("av1_nvenc", ["-preset", "p5"])):
                 self.assertEqual(payload["sources"], server.preflight(payload))
+                server.check_render_codec(payload)
         self.assertEqual(1, len(deleted))
 
     def test_job_diagnostics_have_ordered_cursor_and_bounded_history(self):

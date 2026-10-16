@@ -18,6 +18,7 @@ import threading
 import time
 import traceback
 import uuid
+from contextlib import contextmanager
 from collections import deque
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,8 +34,44 @@ from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, select_rende
 
 JOBS = {}
 SUBMISSION_IDS = {}
+RESOURCE_JOBS = {}
+RESOURCE_DELETIONS = set()
 LOCK = threading.Lock()
 RENDER_LOCK = threading.Lock()
+PREPARE_LOCK = threading.Lock()
+# At most one render plus one preparing/ready edit across ALL submitted orders.
+PIPELINE_SLOTS = threading.BoundedSemaphore(2)
+RESOLVE_STATUS = {"ok": False, "error": "Resolve is busy; its status will refresh after the current render"}
+
+
+@contextmanager
+def pipeline_slot(gate, cancelled):
+    acquired = False
+    try:
+        while not acquired:
+            if cancelled.is_set():
+                raise InterruptedError("Cancelled while waiting for a pipeline stage")
+            acquired = gate.acquire(timeout=.1)
+        if cancelled.is_set():
+            raise InterruptedError("Cancelled while waiting for a pipeline stage")
+        yield
+    finally:
+        if acquired:
+            gate.release()
+
+
+def health_snapshot(*, allow_launch=False):
+    global RESOLVE_STATUS
+    # HTTP status checks must not call Resolve's scripting API during a render.
+    if not RENDER_LOCK.acquire(blocking=False):
+        return dict(RESOLVE_STATUS, busy=True)
+    try:
+        status = health(allow_launch=allow_launch)
+        RESOLVE_STATUS = dict(status)
+        return status
+    finally:
+        RENDER_LOCK.release()
+
 PICKER_LOCK = threading.Lock()
 TOKEN = ""
 VALIDATION_STATE = {"state": "idle", "progress": 0, "message": "Not run", "error": None}
@@ -112,11 +149,55 @@ def uploaded_song(upload_id):
     return matches[0]
 
 
+def retain_job_resources(job_id, payload):
+    """Called under LOCK before acceptance; cleanup cannot invalidate accepted jobs."""
+    if job_id in RESOURCE_JOBS:
+        return
+    resources = set()
+    audio = payload.get("audio") or {}
+    if audio.get("kind") == "upload":
+        uploaded_song(audio.get("uploadId"))
+        resources.add(("upload", audio["uploadId"]))
+    for reference in payload.get("references") or []:
+        reference_id = reference.get("referenceId", "")
+        if not re.fullmatch(r"[0-9a-f]{32}", reference_id) or not (REFERENCE_ROOT / reference_id).is_file():
+            raise ValueError("Performer reference expired; create the job again")
+        resources.add(("reference", reference_id))
+    RESOURCE_JOBS[job_id] = resources
+
+
+def collect_resources():
+    # Caller holds LOCK. Remove only resources with no accepted job using them.
+    used = set().union(*RESOURCE_JOBS.values()) if RESOURCE_JOBS else set()
+    for resource in list(RESOURCE_DELETIONS - used):
+        kind, resource_id = resource
+        paths = list(UPLOAD_ROOT.glob(resource_id + ".*")) if kind == "upload" else [REFERENCE_ROOT / resource_id]
+        try:
+            for path in paths:
+                path.unlink(missing_ok=True)
+        except OSError:
+            # A decoder/antivirus may briefly hold a file. Retry on the next
+            # cleanup request instead of leaving an otherwise finished job live.
+            continue
+        RESOURCE_DELETIONS.discard(resource)
+
+
+def delete_resource(kind, resource_id):
+    if not isinstance(resource_id, str) or not re.fullmatch(r"[0-9a-f]{32}", resource_id):
+        return
+    with LOCK:
+        RESOURCE_DELETIONS.add((kind, resource_id))
+        collect_resources()
+
+
 def delete_uploaded_song(upload_id):
-    try:
-        uploaded_song(upload_id).unlink(missing_ok=True)
-    except ValueError:
-        pass
+    delete_resource("upload", upload_id)
+
+
+def release_job_resources(job_id):
+    with LOCK:
+        RESOURCE_JOBS.pop(job_id, None)
+        collect_resources()
 
 
 def pick_folder(initial_path="", title="Choose a folder"):
@@ -144,7 +225,7 @@ def pick_folder(initial_path="", title="Choose a folder"):
 
 def validate_resolve():
     """Exercise every style, layout, and source-audio combination in Resolve."""
-    with RENDER_LOCK:
+    with RENDER_LOCK, PREPARE_LOCK:
         try:
             VALIDATION_STATE.update(state="running", progress=0, message="Preparing Resolve fixtures", error=None)
             from smoke import main as smoke_main
@@ -226,6 +307,10 @@ def preflight(payload):
         if not project_folder.is_absolute():
             raise ValueError("Project folder must be absolute")
         project_folder.mkdir(parents=True, exist_ok=True)
+    return sources
+
+
+def check_render_codec(payload):
     requested_codec = payload.get("outputCodec") or (payload.get("options") or {}).get("outputCodec")
     if requested_codec:
         resolve = connect(require_validation=False, allow_launch=True)
@@ -246,7 +331,7 @@ def preflight(payload):
                 manager.DeleteProject(temporary_name)
             elif previous.get("format") and previous.get("codec"):
                 current.SetCurrentRenderFormatAndCodec(previous["format"], previous["codec"])
-    return sources
+
 
 
 def log_job_event(state, message, level="info"):
@@ -350,6 +435,7 @@ def run_resolve_worker(clips, audio_path, output_path, width, height, fps, optio
 
 
 def do_job(job_id, payload):
+    global RESOLVE_STATUS
     state = JOBS[job_id]
     cancelled = state["cancelEvent"]
     marker = None
@@ -360,24 +446,21 @@ def do_job(job_id, payload):
         state.update(progress=progress, message=message)
         log_job_event(state, message)
 
-    with RENDER_LOCK:
-        try:
-            if cancelled.is_set():
-                raise InterruptedError("Cancelled before starting")
-            state["state"] = "running"
-            update(1, "Checking Resolve and media paths")
-            status = health(allow_launch=True)
-            if not status["ok"]:
-                raise RuntimeError(status["error"])
-            skip_checks = bool(payload.get("skipSetupChecks"))
-            if not skip_checks and not status.get("validated"):
-                raise RuntimeError("Run the Resolve compatibility check for this companion and Resolve version first")
-            sources = preflight(payload)
-            options = payload.get("options") or {}
-            options["layout"] = options.get("layout", "full-screen")
-            modes = layout_modes(options)
-            width, height, fps = choose_format(sources, options["layout"], options)
-            with TemporaryDirectory(prefix="pmvmaker-") as temp:
+    terminal = {}
+    try:
+        with LOCK:
+            retain_job_resources(job_id, payload)
+        state.update(stage="queued")
+        update(0, "Waiting for preparation slot")
+        with pipeline_slot(PIPELINE_SLOTS, cancelled), TemporaryDirectory(prefix="pmvmaker-") as temp:
+            with pipeline_slot(PREPARE_LOCK, cancelled):
+                state.update(state="running", stage="preparing")
+                update(1, "Checking media paths")
+                sources = preflight(payload)
+                options = payload.get("options") or {}
+                options["layout"] = options.get("layout", "full-screen")
+                modes = layout_modes(options)
+                width, height, fps = choose_format(sources, options["layout"], options)
                 update(5, "Preparing backing song")
                 song = prepare_audio(payload["audio"], temp, cancelled)
                 full = audio_duration(song)
@@ -451,40 +534,59 @@ def do_job(job_id, payload):
                         key = transition["family"]
                         effect_counts[key] = effect_counts.get(key, 0) + 1
                 log_job_event(state, "Effect plan: " + ", ".join(f"{key}={count}" for key, count in effect_counts.items()))
+            state.update(stage="waiting-render")
+            update(52, "Effects ready; waiting for Resolve render slot")
+            with pipeline_slot(RENDER_LOCK, cancelled):
+                state.update(stage="rendering")
+                update(52, "Checking Resolve and render codec")
+                status = health(allow_launch=True)
+                RESOLVE_STATUS = dict(status)
+                if not status["ok"]:
+                    raise RuntimeError(status["error"])
+                skip_checks = bool(payload.get("skipSetupChecks"))
+                if not skip_checks and not status.get("validated"):
+                    raise RuntimeError("Run the Resolve compatibility check for this companion and Resolve version first")
+                check_render_codec(payload)
                 update(52, f"Importing {len(used_video_ids)} used videos and {len(overlays)} transitions into Resolve")
                 render_options = dict(options, creativePrepared=bool(plans), creativeManaged=True, transitionsManaged=True)
                 run_resolve_worker(resolve_clips, render_mix, output_path, width, height, fps, render_options,
                                    payload.get("projectFolder", ""), cancelled, update, temp,
                                    require_validation=not skip_checks,
                                    media_dir=project_media_dir or Path(temp) / "resolve-media")
-                receipt = {"schema": 2, "orderNumber": payload.get("orderNumber"),
-                           "variantIndex": payload.get("variantIndex", 1), "name": payload.get("variantName"),
-                           "options": options, "tempo": getattr(beats, "tempo", 0), "beatConfidence": getattr(beats, "confidence", 0),
-                           "sections": getattr(beats, "sections", ()), "clips": [asdict(clip) for clip in clips], "effects": plans,
-                           "transitions": transitions, "effectCounts": effect_counts,
-                           "outputPath": output_path, "resolveVersion": status.get("version")}
-                Path(output_path).with_suffix(".settings.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
-                log_job_event(state, f"Render complete: {len(clips)} timeline clips from "
-                                    f"{len(used_video_ids)} source videos; output {output_path}")
-                state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,
-                             usedVideoIds=used_video_ids, usedSegmentIds=used_segment_ids,
-                             matchedPerformerIds=matched_performer_ids)
-        except InterruptedError:
-            log_job_event(state, "Render cancelled", "warning")
-            state.update(state="cancelled", message="Render cancelled")
-        except Exception as exc:
-            log_job_event(state, "Render failed: " + str(exc), "error")
-            state.update(state="failed", error=str(exc), message="Render failed")
-            traceback.print_exc()
-        finally:
+            receipt = {"schema": 2, "orderNumber": payload.get("orderNumber"),
+                       "variantIndex": payload.get("variantIndex", 1), "name": payload.get("variantName"),
+                       "options": options, "tempo": getattr(beats, "tempo", 0), "beatConfidence": getattr(beats, "confidence", 0),
+                       "sections": getattr(beats, "sections", ()), "clips": [asdict(clip) for clip in clips], "effects": plans,
+                       "transitions": transitions, "effectCounts": effect_counts,
+                       "outputPath": output_path, "resolveVersion": status.get("version")}
+            Path(output_path).with_suffix(".settings.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+            log_job_event(state, f"Render complete: {len(clips)} timeline clips from "
+                                f"{len(used_video_ids)} source videos; output {output_path}")
+            terminal = dict(state="complete", progress=100, message="PMV rendered", outputPath=output_path,
+                         usedVideoIds=used_video_ids, usedSegmentIds=used_segment_ids,
+                         matchedPerformerIds=matched_performer_ids)
+    except InterruptedError:
+        log_job_event(state, "Render cancelled", "warning")
+        terminal = dict(state="cancelled", message="Render cancelled")
+    except Exception as exc:
+        log_job_event(state, "Render failed: " + str(exc), "error")
+        terminal = dict(state="failed", error=str(exc), message="Render failed")
+        traceback.print_exc()
+    finally:
+        try:
             if (payload.get("audio") or {}).get("kind") == "upload" and not payload.get("retainUpload"):
                 delete_uploaded_song(payload["audio"].get("uploadId"))
+            release_job_resources(job_id)
             if marker:
                 marker.unlink(missing_ok=True)
-            if output_path and state["state"] != "complete":
+            if output_path and terminal.get("state") != "complete":
                 Path(output_path).unlink(missing_ok=True)
-            if project_media_dir and state["state"] != "complete":
+            if project_media_dir and terminal.get("state") != "complete":
                 shutil.rmtree(project_media_dir, ignore_errors=True)
+        except OSError as exc:
+            log_job_event(state, "Temporary media cleanup will need attention: " + str(exc), "warning")
+        finally:
+            state.update(**terminal, stage=terminal["state"])
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -511,11 +613,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/ready":
             return self.reply(200, {"ok": True})
         if path == "/health":
-            return self.reply(200, health(allow_launch=parse_qs(urlparse(self.path).query).get("launch") == ["1"]))
+            return self.reply(200, health_snapshot(allow_launch=parse_qs(urlparse(self.path).query).get("launch") == ["1"]))
         if path == "/validation":
             state = dict(VALIDATION_STATE)
             if state["state"] == "idle":
-                current = health()
+                current = health_snapshot()
                 if current.get("validated"):
                     state.update(state="complete", progress=100, message="Resolve compatibility check passed")
             return self.reply(200, state)
@@ -629,6 +731,7 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if request_id in SUBMISSION_IDS:
                     return self.reply(202, job_snapshot(JOBS[SUBMISSION_IDS[request_id]]))
+                retain_job_resources(job_id, payload)
                 JOBS[job_id] = state
                 if request_id:
                     SUBMISSION_IDS[request_id] = job_id
@@ -649,7 +752,7 @@ class Handler(BaseHTTPRequestHandler):
             reference_id = path.split("/")[-1]
             if not re.fullmatch(r"[0-9a-f]{32}", reference_id):
                 return self.reply(400, {"message": "Invalid face reference ID"})
-            (REFERENCE_ROOT / reference_id).unlink(missing_ok=True)
+            delete_resource("reference", reference_id)
             return self.reply(200, {"deleted": True})
         if path.startswith("/uploads/"):
             delete_uploaded_song(path.split("/")[-1])

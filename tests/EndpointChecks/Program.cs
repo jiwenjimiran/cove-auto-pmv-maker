@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Logging.Abstractions;
 
 CompletedImportChecks.Run();
+await OrderPipelineChecks.RunAsync();
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
@@ -296,11 +297,11 @@ try
     try { await cache.ResolveAsync(cacheRequest, Resolve, cancelledCache.Token); throw new Exception("Cached sources ignored cancellation."); }
     catch (OperationCanceledException) { }
     var progressValues = new RecordedProgress();
-    var secondVersion = new OrderProgress(progressValues, 1, 2, 42);
+    var secondVersion = new OrderProgress(progressValues, 2, 42).ForVersion(1);
     new PhaseProgress(secondVersion, 0, 0.15).Report(1, "Prepared");
     new PhaseProgress(secondVersion, 0.15, 0.85).Report(0, "Render starting");
     new PhaseProgress(secondVersion, 0.15, 0.85).Report(1, "Rendered");
-    if (Math.Abs(progressValues.Values[0] - 0.575) > 0.00001 || progressValues.Values[1] != progressValues.Values[0] || progressValues.Values[2] != 1)
+    if (Math.Abs(progressValues.Values[0] - 0.075) > 0.00001 || progressValues.Values[1] != progressValues.Values[0] || progressValues.Values[2] != 0.5)
         throw new Exception("Preparation/render progress must occupy non-overlapping parts of the order.");
     Console.WriteLine("Queue acceptance, retry deduplication, preparation cancellation, per-version failures, source caching, and progress passed.");
     var expressive = JsonSerializer.Deserialize<PmvOptions>("{\"slideTransitions\":false,\"swirlyBokeh\":false,\"effectIntensity\":\"max\"}", new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
@@ -367,7 +368,7 @@ sealed class CapturedJobs : IJobService
     public readonly List<Func<JobProgress, CancellationToken, Task>> Work = [];
     public string Enqueue(string type, string description, Func<JobProgress, CancellationToken, Task> work, bool exclusive = true)
     {
-        if (!exclusive) throw new Exception("Orders must remain exclusive.");
+        if (exclusive) throw new Exception("PMV orchestration must not block Cove asset scans.");
         Work.Add(work);
         return "fixture-job-" + Work.Count;
     }
