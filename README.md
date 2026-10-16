@@ -23,6 +23,18 @@ This is a preview release. The Resolve render and compatibility checks have been
 
 ## Current implementation notes
 
+### 0.2.0 — automatic creative editing and comparison orders
+
+Select scenes, open Create PMV, choose a song, and choose a layout/style. The editor automatically schedules clip effects around musical energy and onsets. Expand **Automatic effects** to individually disable musical pacing, beat punches, camera movement, impact recoil, speed ramps, motion echoes, highlight bloom, RGB accents, freeze accents, shot variety, action synchronization, movement matching, or color polish. Timing and intensity are automatic; detailed timing/output controls stay under Advanced.
+
+Use **Add order to cart** to snapshot a version, change settings or the backing song, and add another. Edit/remove versions before **Process orders**. A cart supports up to 20 versions against the selected source scope. Each submission receives one persistent order number, and each version gets its own index: `PMVMAKER_ORDER42_name_1.mp4`, `PMVMAKER_ORDER42_name_2.mp4`. Imported outputs also receive a `PMVMAKER_ORDER42` tag. A `.settings.json` receipt beside each MP4 records settings, source ranges, music estimates, and planned effects. Choose the 25-second preview to compare quickly before a full-song order.
+
+Orders preflight every version before queueing, retain each version's resolved sources, use a shared random seed for comparison, and run serially as one cancellable Cove job. Failed versions do not prevent remaining versions from rendering; the final job reports failures. Cancelling stops the current render and remaining versions. Uploaded songs are retained until the entire order exits. Retrying an accepted submission returns the original job while its receipt is available. Draft carts are local to the open dialog and are discarded by Cancel; use Cove Jobs to follow submitted work.
+
+Effects operate on selected shot ranges before Resolve compositing, so they stay within pane masks. OpenCV performs motion analysis and image transforms; FFmpeg encodes high-quality H.264 intermediates and maps source audio through the same bounded retime. Resolve remains the final renderer, including hardware AV1 output. Generated media is temporary unless Save project is enabled. This processing adds render time and temporary disk use; source masters are never changed. Slow sections use frame blending, not neural Speed Warp. Music sections and action peaks are estimates, with restrained scheduling and cooldowns; optical-flow analysis is a motion cue, not semantic action recognition.
+
+The compatibility check now includes three creative-effect fixtures (25 fixtures total). Re-run it after upgrading. The creative fixtures can also be run independently with `python companion/creative_smoke.py <fixture-output-folder>`.
+
 - Resolve scripting and media import run in a separate worker process so long native calls do not block the companion's HTTP status endpoint. Sources enter Resolve in groups of 12, and Cove receives a heartbeat while a worker call is taking time.
 - After each import, the worker refreshes Resolve's Media Pool and retries a small number of files that are still missing. A persistent import failure reports the missing paths and a sample returned path instead of dumping every Resolve clip property.
 

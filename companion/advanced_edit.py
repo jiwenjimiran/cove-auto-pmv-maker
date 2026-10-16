@@ -28,6 +28,10 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
     minimum = min(maximum, max(0.25, float(options.get("minClipSeconds", 1))))
     bar_times = sorted({float(t) for t in getattr(beats, "bars", ()) if minimum <= t < duration - minimum})
     phrase_times = sorted({float(t) for t in getattr(beats, "phrases", ()) if minimum <= t < duration - minimum})
+    if options.get("automaticPacing", True):
+        phrase_times = sorted(set(phrase_times) | {t for t in getattr(beats, "sections", ()) if minimum <= t < duration - minimum})
+        if hasattr(beats, "edit_beats"):
+            bar_times = sorted(set(bar_times) | set(beats.edit_beats(minimum)))
     if not bar_times:
         meter = int(options.get("beatsPerBar")) if str(options.get("beatsPerBar")) in ("3", "4", "6") else 4
         bar_times = [float(t) for t in beats[meter:-1:meter]]
@@ -39,7 +43,7 @@ def edit_plan(sources, beats, options, layout, cancel=None, progress=None, refer
             continue
         phrase = any(abs(t - p) < 0.08 for p in phrase_times)
         due = [p for p in range(panes) if t - last_cut[p] >= maximum - 0.001]
-        if phrase:
+        if phrase and all(t - last >= minimum for last in last_cut):
             changed = list(range(panes))
         else:
             changed = due or ([turn % panes] if t - last_cut[turn % panes] >= minimum else [])

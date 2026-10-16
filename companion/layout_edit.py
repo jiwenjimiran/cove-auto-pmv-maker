@@ -18,6 +18,8 @@ def _musical_times(beats, options):
         meter = int(options.get("beatsPerBar")) if str(options.get("beatsPerBar")) in ("3", "4", "6") else 4
         bars = [float(t) for t in beats[meter:-1:meter]]
     phrases = sorted({float(t) for t in getattr(beats, "phrases", ()) if 0 < t < duration})
+    if options.get("automaticPacing", True):
+        phrases = sorted(set(phrases) | {t for t in getattr(beats, "sections", ()) if 0 < t < duration})
     if not phrases:
         phrases = bars[4::4]
     return duration, bars, phrases
@@ -41,6 +43,8 @@ def _phase_events(start, end, role, beats, bars, phrases, options, opening):
             last[pane] = at
         intro_end = additions[-1]
     cadence = beats[1:-1] if count == 1 and options.get("style") == "high-energy" else bars
+    if options.get("automaticPacing", True) and hasattr(beats, "edit_beats"):
+        cadence = sorted(set(cadence) | set(beats.edit_beats(minimum)))
     turn = 0
     for at in sorted(set(float(t) for t in cadence) | (set(phrases) if count > 1 else set())):
         if at <= intro_end + 0.001 or at >= end - minimum or at <= start:

@@ -27,6 +27,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
     private static readonly HashSet<string> AudioUploadExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff" };
     private const long MaxAudioUploadBytes = 200L * 1024 * 1024;
+    private static readonly SemaphoreSlim OrderGate = new(1, 1);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _acceptedOrders = new();
     private IExtensionStore? _store;
     private IExtensionServiceScopeFactory? _scopes;
     private LocalCompanion? _local;
@@ -34,7 +36,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     public string Id => ExtensionId;
     public string Name => "Auto PMV Maker";
-    public string Version => "0.1.30";
+    public string Version => "0.2.0";
     public string? Description => "Song-led DaVinci Resolve Studio PMVs for Cove.";
     public string? Author => "jiwenji";
     public string? Url => null;
@@ -412,7 +414,27 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         }).RequireCovePermission("videos.read");
         MapPostResult(endpoints, "/api/ext/pmv/create", async (HttpContext ctx) =>
         {
-            var request = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
+            var cart = await ctx.Request.ReadFromJsonAsync<PmvRequest>(Json, ctx.RequestAborted) ?? new();
+            if (cart.Orders is { Count: 0 or > 20 })
+                return Results.BadRequest(new { message = "Add between 1 and 20 versions to the cart." });
+            if (cart.Orders?.Any(line => line is null || line.Audio is null || line.Options is null) == true)
+                return Results.BadRequest(new { message = "Each cart version needs audio and edit settings." });
+            var submission = cart.SubmissionId ?? Guid.NewGuid().ToString("N");
+            if (!Guid.TryParseExact(submission, "N", out _))
+                return Results.BadRequest(new { message = "Invalid order submission ID." });
+            await OrderGate.WaitAsync(ctx.RequestAborted);
+            try
+            {
+            var owner = ctx.RequestServices.GetService<ICurrentPrincipalAccessor>()?.Current;
+            var receiptKey = $"order-submission-{owner?.UserId ?? 0}-{owner?.TokenId}-{submission}";
+            var existing = _acceptedOrders.GetValueOrDefault(receiptKey)
+                ?? (_store is null ? null : await _store.GetAsync(receiptKey, ctx.RequestAborted));
+            if (existing is not null) return Results.Content(existing, "application/json", statusCode: 202);
+            var requests = cart.Orders is null ? new List<PmvRequest> { cart } : cart.Orders.Select(line => new PmvRequest
+            { Scope = cart.Scope, Audio = line.Audio, Options = line.Options, FacePerformerIds = line.FacePerformerIds, Name = line.Name }).ToList();
+            var prepared = new List<(PmvRequest Request, PmvSettings Settings, CovePrincipal? Principal, ScopeResult Sources)>();
+            foreach (var request in requests)
+            {
             if (NewOptionError(request.Options ?? (await SettingsAsync(ctx.RequestAborted)).Defaults) is { } optionError)
                 return Results.BadRequest(new { message = optionError });
             if (string.IsNullOrWhiteSpace((await SettingsAsync(ctx.RequestAborted)).OutputFolder))
@@ -468,10 +490,58 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             using var checkedResponse = await _http.SendAsync(preflight, ctx.RequestAborted);
             if (!checkedResponse.IsSuccessStatusCode)
                 return Results.BadRequest(new { message = await checkedResponse.Content.ReadAsStringAsync(ctx.RequestAborted) });
+
+            request.Options ??= settings.Defaults;
+            prepared.Add((request, settings, principal, resolved));
+            }
+            if (_store is null) return Results.Problem("Extension storage unavailable.");
+            var previousNumber = await _store.GetAsync("last-order-number", ctx.RequestAborted);
+            var orderNumber = (long.TryParse(previousNumber, out var parsed) ? parsed : 0) + 1;
+            await _store.SetAsync("last-order-number", orderNumber.ToString(), ctx.RequestAborted);
+            for (var index = 0; index < prepared.Count; index++)
+            {
+                prepared[index].Request.OrderNumber = orderNumber;
+                prepared[index].Request.VariantIndex = index + 1;
+                prepared[index].Request.Options!.RandomSeed ??= (int)(orderNumber % int.MaxValue);
+            }
             var jobs = ctx.RequestServices.GetRequiredService<IJobService>();
-            var id = jobs.Enqueue($"ext:{ExtensionId}:render", "[PMV] Render " + resolved.Videos.Count + " sources",
-                (progress, ct) => RunAsync(request, settings, principal, progress, ct), exclusive: true);
-            return Results.Accepted(value: new { jobId = id, message = "PMV queued.", exclusions = resolved.Exclusions });
+            var id = jobs.Enqueue($"ext:{ExtensionId}:render", $"[PMV] ORDER{orderNumber} · {prepared.Count} versions",
+                async (progress, ct) =>
+                {
+                    var failures = new List<string>();
+                    try
+                    {
+                        for (var index = 0; index < prepared.Count; index++)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            var line = prepared[index];
+                            try { await RunAsync(line.Request, line.Settings, line.Principal,
+                                new OrderProgress(progress, index, prepared.Count, orderNumber), ct, line.Sources); }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception ex) { failures.Add($"Version {index + 1}: {ex.Message}"); }
+                        }
+                    }
+                    finally
+                    {
+                        foreach (var line in prepared.Where(row => row.Request.Audio.Kind == "upload")
+                                     .DistinctBy(row => row.Request.Audio.UploadId))
+                        {
+                            using var delete = NewRequest(HttpMethod.Delete, line.Settings, "uploads/" + line.Request.Audio.UploadId);
+                            try { await _http.SendAsync(delete, CancellationToken.None); } catch { }
+                        }
+                    }
+                    if (failures.Count > 0) throw new InvalidOperationException(string.Join("; ", failures));
+                    progress.Report(1, $"ORDER{orderNumber}: all {prepared.Count} versions complete");
+                }, exclusive: true);
+            var receipt = JsonSerializer.Serialize(new { jobId = id, orderNumber, variants = prepared.Count,
+                message = $"ORDER{orderNumber} queued. Track progress in Cove Jobs." }, Json);
+            // Persist after acceptance; retries in this host return the existing job.
+            _acceptedOrders[receiptKey] = receipt;
+            try { await _store.SetAsync(receiptKey, receipt, CancellationToken.None); }
+            catch (Exception ex) { ctx.RequestServices.GetService<ILogger<PmvMakerExtension>>()?.LogWarning(ex, "[PMV] Could not persist accepted order receipt {OrderNumber}", orderNumber); }
+            return Results.Content(receipt, "application/json", statusCode: 202);
+            }
+            finally { OrderGate.Release(); }
         }).RequireCovePermission("videos.read").RequireCovePermission("videos.write").RequireCovePermission("jobs.run");
     }
 
@@ -491,6 +561,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
 
     private static string? NewOptionError(PmvOptions options, bool requireIncludedTags = true)
     {
+        if (options.PreviewSeconds is not null and not 25)
+            return "Preview length must be 25 seconds or full song.";
+        if (options.Style is not ("cinematic" or "rhythmic-polish" or "high-energy"))
+            return "Choose a supported editing style.";
         if (options.LayoutModes is null || options.LayoutModes.Any(mode => mode is not ("grid" or "three-pane" or "full-screen"))
             || options.LayoutModes.Distinct().Count() != options.LayoutModes.Length)
             return "Choose each supported PMV layout mode at most once.";
@@ -525,13 +599,13 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         return content;
     }
 
-    private async Task RunAsync(PmvRequest request, PmvSettings settings, CovePrincipal? principal, Cove.Core.Interfaces.IJobProgress progress, CancellationToken ct)
+    private async Task RunAsync(PmvRequest request, PmvSettings settings, CovePrincipal? principal, Cove.Core.Interfaces.IJobProgress progress, CancellationToken ct, ScopeResult? frozenSources = null)
     {
         await using var scope = _scopes!.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<PmvMakerExtension>>();
         var options = request.Options ?? settings.Defaults;
-        var resolved = FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct, options), options);
+        var resolved = frozenSources ?? FilterSourcesForLayout(await scope.ServiceProvider.GetRequiredService<SourceResolver>().ResolveAsync(request.Scope, principal, ct, options), options);
         if (resolved.Videos.Count == 0) throw new InvalidOperationException("All selected media became unavailable before the job started.");
         var activeModes = EffectiveLayoutModes(options);
         var portraitSelection = activeModes.Contains("three-pane") && !options.UseVerticalVideosOnly
@@ -565,6 +639,10 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                 v.StudioId, v.StudioName, v.PerformerIds, v.PerformerNames,
                 segments = v.AllowedSegments ?? v.Segments, allSegments = v.Segments, v.SavedRanges,
                 faceObservations = faceObservations.GetValueOrDefault(v.Id, []) }),
+            orderNumber = request.OrderNumber,
+            variantIndex = request.VariantIndex,
+            variantName = request.Name,
+            retainUpload = request.OrderNumber > 0,
             launchName = resolved.LaunchName,
             launchKind = resolved.LaunchKind,
             audio = await AudioPayloadAsync(request.Audio, settings, db, scope.ServiceProvider.GetRequiredService<IAuthorizationService>(), principal, ct),
@@ -612,7 +690,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
                     progress.Report(0.98, "Importing PMV into Cove");
                     logger.LogInformation("[PMV {CompanionJobId}] Importing finished MP4 into Cove", submitted.Id[..Math.Min(8, submitted.Id.Length)]);
                     var importedId = await scope.ServiceProvider.GetRequiredService<IScanService>().ImportDownloadedVideoAsync(covePath, null, ct);
-                    await ApplyMetadataAsync(db, importedId, state, resolved, options, ct);
+                    await ApplyMetadataAsync(db, importedId, state, resolved, options, ct, request.OrderNumber);
                     logger.LogInformation("[PMV {CompanionJobId}] Cove import complete: video {VideoId}", submitted.Id[..Math.Min(8, submitted.Id.Length)], importedId);
                 }
                 progress.Report(1.0, "PMV saved: " + covePath);
@@ -769,7 +847,7 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
         return new { kind = audio.Kind, path = ToHost(path, settings) };
     }
 
-    private static async Task ApplyMetadataAsync(CoveContext db, int videoId, CompanionJob job, ScopeResult scope, PmvOptions options, CancellationToken ct)
+    private static async Task ApplyMetadataAsync(CoveContext db, int videoId, CompanionJob job, ScopeResult scope, PmvOptions options, CancellationToken ct, long orderNumber = 0)
     {
         var used = scope.Videos.Where(v => job.UsedVideoIds?.Contains(v.Id) == true).ToList();
         var tagIds = new HashSet<int>();
@@ -781,7 +859,8 @@ public sealed class PmvMakerExtension : IExtension, IUIExtension, IApiExtension,
             foreach (var id in used.SelectMany(v => v.AllowedSegments ?? v.Segments).Where(s => job.UsedSegmentIds?.Contains(s.Id) == true)
                 .Where(s => s.TagId.HasValue).Select(s => s.TagId!.Value).Distinct())
                 tagIds.Add(id);
-        foreach (var name in new[] { options.AddPmvTag ? "PMV" : null, options.AddAutoPmvTag ? "Auto_PMV" : null }.OfType<string>())
+        foreach (var name in new[] { options.AddPmvTag ? "PMV" : null, options.AddAutoPmvTag ? "Auto_PMV" : null,
+                     orderNumber > 0 ? $"PMVMAKER_ORDER{orderNumber}" : null }.OfType<string>())
         {
             var tag = await db.Tags.FirstOrDefaultAsync(t => t.Name == name, ct);
             if (tag is null) { tag = new Tag { Name = name }; db.Tags.Add(tag); await db.SaveChangesAsync(ct); }

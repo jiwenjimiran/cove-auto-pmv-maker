@@ -19,7 +19,7 @@ from media_compat import remux_rejected_containers
 
 MODULES = Path(os.environ.get("RESOLVE_SCRIPT_API", r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting")) / "Modules"
 VALIDATION = Path(__file__).with_name("validated-version.json")
-VALIDATION_SCHEMA = 5
+VALIDATION_SCHEMA = 6
 sys.path.insert(0, str(MODULES))
 
 
@@ -566,12 +566,12 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
             else:
                 set_property("Scaling", resolve.SCALE_FILL, "full-screen scaling")
             face_slice = role == "three-pane" and options.get("selectionMode") == "face"
-            if not face_slice and style == "high-energy" and clip.accent:
+            if not options.get("creativeManaged") and not face_slice and style == "high-energy" and clip.accent:
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.1 * motion_intensity)
                 set_property("ZoomX", zoom, "accent zoom X")
                 set_property("ZoomY", zoom, "accent zoom Y")
-            elif not face_slice and style == "cinematic":
+            elif not options.get("creativeManaged") and not face_slice and style == "cinematic":
                 motion_intensity = intensity("motionIntensity", clip, 0.25)
                 zoom = base_zoom * (1 + 0.03 * motion_intensity)
                 set_property("ZoomX", zoom, "cinematic zoom X")
@@ -596,8 +596,8 @@ def render(clips, audio_path, output_path, width, height, fps, options, project_
                          f"Assembling clip {placed_clips}/{len(clips)}: video {clip.video_id}, {clip_role(clip)} cell {clip.pane + 1}, timeline {clip.record_start:.1f}s")
                 fade = 0.0
                 transition_intensity = intensity("transitionIntensity", clip, 0.25)
-                flash_intensity = intensity("flashIntensity", clip, 0)
-                glitch_intensity = intensity("glitchIntensity", clip, 0)
+                flash_intensity = 0 if options.get("creativeManaged") else intensity("flashIntensity", clip, 0)
+                glitch_intensity = 0 if options.get("creativeManaged") else intensity("glitchIntensity", clip, 0)
                 if (position and not clip.underlay and not pane_clips[position - 1].underlay
                         and abs(pane_clips[position - 1].record_start + pane_clips[position - 1].duration - clip.record_start) < 0.05
                         and transition_on and transition_intensity > 0):

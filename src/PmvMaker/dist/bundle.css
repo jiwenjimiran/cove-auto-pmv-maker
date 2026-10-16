@@ -911,3 +911,29 @@
   color: var(--pmv-muted);
   font-size: 12px;
 }
+.pmv-cart {
+  margin-top: 18px;
+}
+.pmv-cart-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid #8884;
+}
+.pmv-cart-line > div {
+  flex: 1;
+  min-width: 0;
+}
+.pmv-cart-line small {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 4px;
+  opacity: .75;
+}
+.pmv-working {
+  border: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  min-width: 0;
+}

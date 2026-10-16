@@ -6,13 +6,39 @@ import statistics
 
 
 class BeatGrid(list):
-    def __init__(self, beats, bars=(), phrases=(), tempo=0.0, meter=4, confidence=0.0):
+    def __init__(self, beats, bars=(), phrases=(), tempo=0.0, meter=4, confidence=0.0,
+                 strengths=(), energy=(), sections=(), bands=()):
         super().__init__(beats)
         self.bars = tuple(bars)
         self.phrases = tuple(phrases)
         self.tempo = tempo
         self.meter = meter
         self.confidence = confidence
+        self.strengths = tuple(strengths)
+        self.energy = tuple(energy)
+        self.sections = tuple(sections)
+        self.bands = tuple(bands)
+
+    def energy_at(self, at):
+        if not self.energy:
+            return 0.5
+        return min(self.energy, key=lambda row: abs(row[0] - at))[1]
+
+    def strength_at(self, at):
+        if not self.strengths:
+            return 0.5
+        return min(self.strengths, key=lambda row: abs(row[0] - at))[1]
+
+    def edit_beats(self, minimum=1.0):
+        """Dense high-energy beats, breathing room in quieter passages."""
+        last = -minimum
+        result = []
+        for at in self[1:-1]:
+            energy = self.energy_at(at)
+            if energy >= 0.62 and at - last >= minimum:
+                result.append(at)
+                last = at
+        return result
 
 
 def analyze_music(song, start, end, run, cancel=None, meter="auto"):
@@ -23,7 +49,7 @@ def analyze_music(song, start, end, run, cancel=None, meter="auto"):
     if duration <= 0:
         raise ValueError("Song duration must be positive")
     sample_rate, hop, frame_length = 11025, 256, 1024
-    beat_times, accents = [], []
+    beat_times, accents, energy, bands = [], [], [], []
     cursor = 0.0
     while cursor < duration:
         if cancel is not None and cancel.is_set():
@@ -32,6 +58,10 @@ def analyze_music(song, start, end, run, cancel=None, meter="auto"):
         raw, _ = run(["ffmpeg", "-v", "error", "-ss", str(start + cursor), "-t", str(span),
                       "-i", str(song), "-ac", "1", "-ar", str(sample_rate), "-f", "f32le", "-"], cancel=cancel)
         samples = np.frombuffer(raw, dtype="<f4")
+        for first in range(0, len(samples), sample_rate // 2):
+            block = samples[first:first + sample_rate // 2]
+            if block.size:
+                energy.append((cursor + first / sample_rate, float(np.sqrt(np.mean(block * block)))))
         if samples.size >= frame_length * 2:
             # Positive log-spectral flux across bass, midrange, and treble.
             # Chunked FFTs keep a five-minute window below ~50 MB of working data.
@@ -46,6 +76,9 @@ def analyze_music(song, start, end, run, cancel=None, meter="auto"):
                 if previous is not None:
                     spectrum = np.vstack((previous, spectrum))
                 flux = np.maximum(0, np.diff(spectrum, axis=0))
+                for offset in range(0, len(flux), 8):
+                    bands.append((cursor + (first + offset) * hop / sample_rate,
+                                  *[float(flux[offset, a:b].mean()) for a, b in ((1, 24), (24, 180), (180, 513))]))
                 envelope.extend((flux[:, 1:24].mean(axis=1) * 1.4 + flux[:, 24:180].mean(axis=1)
                                  + flux[:, 180:].mean(axis=1) * 0.5).tolist())
                 previous = spectrum[-1:]
@@ -104,4 +137,16 @@ def analyze_music(song, start, end, run, cancel=None, meter="auto"):
     phase = max(range(chosen_meter), key=lambda value: phases[value]) if phases else 0
     bars = [beat_times[i] for i in range(phase, len(beat_times), chosen_meter)]
     phrases = [bars[i] for i in range(4, len(bars), 4)]
-    return BeatGrid([0.0, *beat_times, duration], bars, phrases, tempo, chosen_meter, confidence)
+    peak = max((value for _, value in energy), default=0)
+    energy = [(t, min(1.0, value / max(peak, 1e-8))) for t, value in energy]
+    # Energy changes are candidate section boundaries, not asserted verse/chorus labels.
+    sections = []
+    for i in range(4, len(energy) - 4):
+        before = sum(v for _, v in energy[i-4:i]) / 4
+        after = sum(v for _, v in energy[i:i+4]) / 4
+        if abs(after - before) > .22:
+            at = min(bars, key=lambda t: abs(t - energy[i][0])) if bars else energy[i][0]
+            if not sections or at - sections[-1] >= 4:
+                sections.append(at)
+    return BeatGrid([0.0, *beat_times, duration], bars, phrases, tempo, chosen_meter, confidence,
+                    zip(beat_times, accents), energy, sections, bands)

@@ -170,7 +170,26 @@ try
     if (!createJson.RootElement.GetProperty("message").GetString()!.Contains("output folder"))
         throw new Exception("Create validation error was missing.");
 
-    Console.WriteLine("PMV endpoints returned JSON for GET, PUT, and POST.");
+    using var emptyCart = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", new { orders = Array.Empty<object>() });
+    using var emptyCartJson = await ReadJson(emptyCart, HttpStatusCode.BadRequest);
+    if (!emptyCartJson.RootElement.GetProperty("message").GetString()!.Contains("1 and 20"))
+        throw new Exception("Empty carts must be rejected before queueing.");
+    using var largeCart = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", new { orders = Enumerable.Range(0, 21).Select(_ => new PmvVariant()) });
+    using var largeCartJson = await ReadJson(largeCart, HttpStatusCode.BadRequest);
+    using var malformedCart = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", new { orders = new object?[] { null } });
+    using var malformedCartJson = await ReadJson(malformedCart, HttpStatusCode.BadRequest);
+    var submission = Guid.NewGuid().ToString("N");
+    var accepted = (System.Collections.Concurrent.ConcurrentDictionary<string, string>)typeof(PmvMakerExtension)
+        .GetField("_acceptedOrders", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(pmvExtension)!;
+    accepted[$"order-submission-0--{submission}"] = "{\"orderNumber\":42,\"jobId\":\"same-job\"}";
+    using var retryOrder = await client.PostAsJsonAsync(address + "/api/ext/pmv/create", new { submissionId = submission });
+    using var retryOrderJson = await ReadJson(retryOrder, HttpStatusCode.Accepted);
+    if (retryOrderJson.RootElement.GetProperty("jobId").GetString() != "same-job")
+        throw new Exception("Retrying an accepted comparison order must not enqueue a duplicate.");
+    var effects = JsonSerializer.Deserialize<PmvOptions>("{\"rgbSplit\":false,\"speedRamps\":false}", new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+    if (effects.RgbSplit || effects.SpeedRamps || !effects.BeatPunch || !effects.ColorPolish)
+        throw new Exception("Effect opt-outs and automatic defaults must survive JSON binding.");
+    Console.WriteLine("PMV endpoints, cart bounds, effect toggles, and accepted-order retries passed.");
 }
 finally
 {

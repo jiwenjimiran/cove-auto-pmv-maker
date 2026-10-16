@@ -25,7 +25,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
 from urllib.parse import parse_qs, urlparse
 
-from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_modes, mix_audio, output_stem, prepare_audio, reserve_output
+from engine import audio_duration, beat_grid, choose_format, edit_plan, layout_modes, mix_audio, output_stem, prepare_audio, reserve_output, sanitize
+from creative_edit import FEATURES, direct, prepare_creative_clips
 from media_compat import needs_reencode, prepare_resolve_clips
 from resolve_adapter import VALIDATION, VALIDATION_SCHEMA, connect, select_render_profile
 
@@ -381,6 +382,8 @@ def do_job(job_id, payload):
                 full = audio_duration(song)
                 trim_start = float(options.get("songTrimStart") or 0)
                 trim_end = float(options.get("songTrimEnd") or full)
+                if options.get("previewSeconds"):
+                    trim_end = min(trim_end, trim_start + float(options["previewSeconds"]))
                 if trim_start < 0 or trim_end > full or trim_end - trim_start < 2:
                     raise ValueError("Song trim must leave at least two seconds")
                 update(12, "Analyzing beats and phrases")
@@ -392,6 +395,9 @@ def do_job(job_id, payload):
                 clips = planner(sources, beats, options, options["layout"], cancelled, update,
                                 face_references(payload.get("references") or []),
                                 lambda message: log_job_event(state, message))
+                plans = []
+                if any(options.get(key, True) for key in FEATURES if key != "automaticPacing"):
+                    clips, plans = direct(clips, beats, options, cancelled, update)
                 if cancelled.is_set():
                     raise InterruptedError("Cancelled")
                 used_video_ids = sorted({c.video_id for c in clips})
@@ -402,11 +408,13 @@ def do_job(job_id, payload):
                                            and clip.source_start + clip.duration > float(segment["start"])})
                 matched_performer_ids = sorted({c.matched_performer_id for c in clips if c.matched_performer_id is not None})
                 stem = output_stem(sources, clips, payload.get("launchName"))
+                if payload.get("orderNumber"):
+                    number = str(payload["orderNumber"])
+                    if not number.isdigit() or len(number) > 20:
+                        raise ValueError("Invalid comparison order number")
+                    stem = f"PMVMAKER_ORDER{number}_{sanitize(payload.get('variantName') or stem.removeprefix('PMVMAKER_'))}_{int(payload.get('variantIndex', 1))}"
                 output_path, marker = reserve_output(payload["outputFolder"], stem, payload.get("projectFolder", ""),
                                                      bool(options.get("saveProject")))
-                update(40, f"Mixing backing song and source accents from {len(clips)} clips")
-                mix = mix_audio(song, clips, options, temp, beats[-1], trim_start, cancelled)
-                render_mix = mix
                 if options.get("saveProject"):
                     # A .drp references its audio file by path. Keep the final
                     # mix with the project instead of leaving it in a temp dir.
@@ -414,19 +422,33 @@ def do_job(job_id, payload):
                         f"{Path(output_path).stem}_media_{job_id[:8]}"
                     media_candidate.mkdir(parents=True, exist_ok=False)
                     project_media_dir = media_candidate
+                resolve_clips = clips
+                if plans:
+                    resolve_clips = prepare_creative_clips(clips, plans, options,
+                        (project_media_dir or Path(temp)) / "effects", fps, cancelled, update)
+                update(50, f"Mixing backing song and source accents from {len(clips)} clips")
+                mix = mix_audio(song, resolve_clips, options, temp, beats[-1], trim_start, cancelled)
+                render_mix = mix
+                if project_media_dir:
                     render_mix = str(project_media_dir / "final-mix.wav")
                     shutil.copy2(mix, render_mix)
-                resolve_clips = clips
-                if any(needs_reencode(clip.path) for clip in clips):
+                if any(needs_reencode(clip.path) for clip in resolve_clips):
                     if not options.get("reencodeIncompatibleContainers", True):
                         raise ValueError("Windows Media source selected while re-encoding is disabled")
                     media_dir = project_media_dir or Path(temp) / "resolve-media"
-                    resolve_clips = prepare_resolve_clips(clips, media_dir, cancelled, update)
+                    resolve_clips = prepare_resolve_clips(resolve_clips, media_dir, cancelled, update)
                 update(52, f"Importing {len(used_video_ids)} used videos into Resolve")
-                run_resolve_worker(resolve_clips, render_mix, output_path, width, height, fps, options,
+                render_options = dict(options, creativePrepared=bool(plans), creativeManaged=True)
+                run_resolve_worker(resolve_clips, render_mix, output_path, width, height, fps, render_options,
                                    payload.get("projectFolder", ""), cancelled, update, temp,
                                    require_validation=not skip_checks,
                                    media_dir=project_media_dir or Path(temp) / "resolve-media")
+                receipt = {"schema": 1, "orderNumber": payload.get("orderNumber"),
+                           "variantIndex": payload.get("variantIndex", 1), "name": payload.get("variantName"),
+                           "options": options, "tempo": getattr(beats, "tempo", 0), "beatConfidence": getattr(beats, "confidence", 0),
+                           "sections": getattr(beats, "sections", ()), "clips": [asdict(clip) for clip in clips], "effects": plans,
+                           "outputPath": output_path, "resolveVersion": status.get("version")}
+                Path(output_path).with_suffix(".settings.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
                 log_job_event(state, f"Render complete: {len(clips)} timeline clips from "
                                     f"{len(used_video_ids)} source videos; output {output_path}")
                 state.update(state="complete", progress=100, message="PMV rendered", outputPath=output_path,
@@ -440,7 +462,7 @@ def do_job(job_id, payload):
             state.update(state="failed", error=str(exc), message="Render failed")
             traceback.print_exc()
         finally:
-            if (payload.get("audio") or {}).get("kind") == "upload":
+            if (payload.get("audio") or {}).get("kind") == "upload" and not payload.get("retainUpload"):
                 delete_uploaded_song(payload["audio"].get("uploadId"))
             if marker:
                 marker.unlink(missing_ok=True)

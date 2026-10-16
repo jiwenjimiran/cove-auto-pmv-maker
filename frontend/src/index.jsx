@@ -14,7 +14,7 @@ async function api(path, method = "GET", body) {
     try { result = JSON.parse(raw); }
     catch { throw new Error(`Cove returned an invalid response for ${path} (${response.status}).`); }
   }
-  if (!response.ok) throw new Error(result?.message || result?.error || `Request failed (${response.status})`);
+  if (!response.ok) { const error = new Error(result?.message || result?.error || `Request failed (${response.status})`); error.status = response.status; throw error; }
   if (result === null) throw new Error(`Cove returned an empty response for ${path} (${response.status}).`);
   return result;
 }
@@ -204,7 +204,24 @@ function FolderPicker({ kind, current, onChoose, onClose }) {
   </div>;
 }
 
+const effectSections = [
+  ["automaticPacing", "Musical pacing", "Builds, peaks, and breathing room follow the song automatically."],
+  ["beatPunch", "Beat punches", "Quick subject-centered zooms on selected strong beats."],
+  ["cameraDrift", "Camera movement", "Gentle continuous pushes and sideways movement."],
+  ["impactRecoil", "Impact recoil", "Short movement kicks that settle after a hit."],
+  ["speedRamps", "Speed ramps", "Accelerate and slow selected action without changing the edit length."],
+  ["motionEcho", "Motion echoes", "Brief, subtle trails on selected energetic shots."],
+  ["highlightBloom", "Highlight bloom", "Soft highlight glow on musical peaks."],
+  ["rgbSplit", "Color-edge accents", "Brief RGB separation on occasional hits."],
+  ["freezeAccents", "Freeze accents", "Short holds followed by forward motion."],
+  ["smartFraming", "Shot variety", "Alternate shot scale while keeping the subject in view."],
+  ["actionSync", "Action on the beat", "Align detected movement peaks with musical accents."],
+  ["motionMatching", "Match movement", "Prefer compatible movement across equally timed shots."],
+  ["colorPolish", "Color polish", "Match exposure from the selected shot and apply gentle consistent contrast."]
+];
+
 const defaultOptions = {
+  ...Object.fromEntries(effectSections.map(([key]) => [key, true])), previewSeconds: null,
   layout: "full-screen", layoutModes: [], useVerticalVideosOnly: false, selectionMode: "face", segmentMode: "exclude", segmentTagIds: [], keepFaceCentered: true,
   matchSelectedPerformers: true, faceSimilarityThreshold: 0.55, mirrorRepeatedSource: true,
   sampledClipsProgress: true, minimumTimestampSeconds: 0, endBufferSeconds: 0,
@@ -358,11 +375,18 @@ function OptionForm({ options, setOptions, portraitFaceControls = null }) {
     <div className="pmv-form-heading"><h5>Creative direction</h5><span>02</span></div>
     <div className="pmv-grid">
       <Control label="Style" help={optionHelp.style}>{id => <><select id={id} value={options.style} onChange={e => setOptions(current => ({ ...current, style: e.target.value, ...stylePresets[e.target.value] }))}>{Object.keys(styleHelp).map(x => <option key={x} value={x}>{x.replaceAll("-", " ")}</option>)}</select><small>{styleHelp[options.style]}</small></>}</Control>
+
+
+    </div>
+    <Control label="Length" help="Use a short comparison preview before rendering the full song.">{id => <select id={id} value={options.previewSeconds || ""} onChange={e => set("previewSeconds", e.target.value ? 25 : null)}><option value="">Full song</option><option value="25">25-second comparison preview</option></select>}</Control>
+    <details className="pmv-advanced"><summary>Automatic effects · {effectSections.filter(([key]) => options[key] !== false).length} enabled</summary>
+      <p>Timing, strength, and combinations are automatic. Uncheck any section to leave it out.</p>
+      <div className="pmv-checkbox-grid">{effectSections.map(([key, label, help]) => <Control key={key} label={label} help={help} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options[key] !== false} onChange={e => set(key, e.target.checked)} />}</Control>)}</div>
+    </details>
+    <details className="pmv-advanced"><summary>Advanced edit controls</summary><div className="pmv-grid">
       <Control label="Source audio" help={optionHelp.sourceAudio}>{id => <select id={id} value={options.sourceAudio} onChange={e => set("sourceAudio", e.target.value)}><option value="muted">Muted</option><option value="mixed">Mixed · brief accents</option><option value="all">All source audio</option></select>}</Control>
       <Control label="Render codec" help={optionHelp.outputCodec}>{id => <select id={id} value={options.outputCodec || "av1"} onChange={e => set("outputCodec", e.target.value)}><option value="h264">H.264 MP4</option><option value="h265">H.265 MP4</option><option value="av1">AV1 MP4</option></select>}</Control>
-    </div>
-    <details className="pmv-advanced"><summary>Advanced edit controls</summary><div className="pmv-grid">
-      {[["pacing", "Pacing"], ["transitionIntensity", "Transition intensity"], ["motionIntensity", "Motion"], ["flashIntensity", "Flash"], ["glitchIntensity", "Glitch"]].map(([key, label]) => <RangeControl key={key} label={label} help={optionHelp[key]} lower={options[`${key}Min`] ?? 0} upper={options[`${key}Max`] ?? 0} onChange={(lower, upper) => setOptions(current => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper }))} />)}
+      {[["transitionIntensity", "Transition intensity"]].map(([key, label]) => <RangeControl key={key} label={label} help={optionHelp[key]} lower={options[`${key}Min`] ?? 0} upper={options[`${key}Max`] ?? 0} onChange={(lower, upper) => setOptions(current => ({ ...current, [`${key}Min`]: lower, [`${key}Max`]: upper }))} />)}
       <RangeControl label="Clip length (sec)" help={optionHelp.clipLength} lower={options.minClipSeconds} upper={options.maxClipSeconds} minValue={0.25} maxValue={30} step={0.25} onChange={(lower, upper) => setOptions(current => ({ ...current, minClipSeconds: lower, maxClipSeconds: upper }))} />
       <Control label="Sampled clips progress through video" help={optionHelp.sampledClipsProgress} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.sampledClipsProgress !== false} onChange={e => set("sampledClipsProgress", e.target.checked)} />}</Control>
       <Control label="Re-encode incompatible containers" help={optionHelp.reencodeIncompatibleContainers} className="pmv-toggle">{id => <input id={id} type="checkbox" checked={options.reencodeIncompatibleContainers !== false} onChange={e => set("reencodeIncompatibleContainers", e.target.checked)} />}</Control>
@@ -581,6 +605,13 @@ function PmvDialog({ context, close }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [cart, setCart] = useState([]);
+  const [variantName, setVariantName] = useState("");
+  const [queued, setQueued] = useState(null);
+  const submission = useRef(null);
+  const cartRef = useRef([]);
+  cartRef.current = cart;
+  const [editing, setEditing] = useState(null);
   const uploadGeneration = useRef(0);
   useEffect(() => { if (settings) { const kind = settings.defaultAudioKind || "cove";
     setOptions({ ...defaultOptions, ...settings.defaults });
@@ -618,7 +649,7 @@ function PmvDialog({ context, close }) {
   const audioReady = audio.kind === "cove" ? Number(audio.coveAudioId) > 0 : audio.kind === "folder" ? !!audio.path
     : audio.kind === "upload" ? !!audio.uploadId : audio.kind === "video" ? Number(audio.coveVideoId) > 0
       : audio.kind === "youtube" && /^https:\/\//i.test(audio.url || "");
-  const removeUpload = uploadId => { if (uploadId) api(`/uploads/${uploadId}`, "DELETE").catch(() => {}); };
+  const removeUpload = uploadId => { if (uploadId && !submission.current && !cartRef.current.some(line => line.audio.uploadId === uploadId)) api(`/uploads/${uploadId}`, "DELETE").catch(() => {}); };
   const playPreview = url => {
     const player = audioPlayer.current;
     if (!player) return;
@@ -649,7 +680,13 @@ function PmvDialog({ context, close }) {
     } catch (e) { if (generation === uploadGeneration.current) setError(e.message); }
     finally { if (generation === uploadGeneration.current) setUploading(false); }
   };
-  const cancel = () => { uploadGeneration.current += 1; removeUpload(audio.uploadId); audioPlayer.current?.pause(); close(); };
+  const cancel = () => {
+    if (busy) return;
+    uploadGeneration.current += 1;
+    const ids = new Set([audio.uploadId, ...cart.map(line => line.audio.uploadId)].filter(Boolean));
+    cartRef.current = [];
+    ids.forEach(removeUpload); audioPlayer.current?.pause(); close();
+  };
   useEffect(() => {
     if (!segmentsReady) { setPreview(null); return; }
     let active = true;
@@ -658,25 +695,67 @@ function PmvDialog({ context, close }) {
       .catch(e => { if (active) setError(e.message); }), 150);
     return () => { active = false; window.clearTimeout(timer); };
   }, [JSON.stringify(scope), JSON.stringify(options), segmentsReady]);
-  const create = async () => { if (!audioReady) { setError("Choose a backing track before creating the PMV."); return; }
-    if (!segmentsReady) { setError("Choose at least one segment tag in Include mode."); return; }
-    if (needsFaceReferences(options) && !faceIds.length) { setError("Choose at least one performer with a reference image, or turn off performer matching."); return; }
-    setBusy(true); setError(""); try {
-    await api("/create", "POST", request);
-    audioPlayer.current?.pause(); close();
-  } catch (e) { setError(e.message); } finally { setBusy(false); } };
+  const validDraft = () => {
+    if (!audioReady) { setError("Choose a backing track first."); return false; }
+    if (!segmentsReady) { setError("Choose at least one segment tag in Include mode."); return false; }
+    if (needsFaceReferences(options) && !faceIds.length) { setError("Choose a performer with a reference image, or turn off performer matching."); return false; }
+    return true;
+  };
+  const snapshot = () => JSON.parse(JSON.stringify({ name: variantName.trim() || options.style,
+    audio, options, facePerformerIds: faceIds, songName: selectedAudioName || audio.name || audio.path || audio.url || `Track ${audio.coveAudioId || audio.coveVideoId || ""}` }));
+  const addOrder = () => {
+    if (!validDraft()) return;
+    setError(""); submission.current = null;
+    const line = snapshot();
+    setCart(current => editing === null ? [...current, line] : current.map((row, index) => index === editing ? line : row));
+    setEditing(null); setVariantName("");
+  };
+  const removeOrder = index => {
+    const removed = cart[index];
+    const next = cart.filter((_, i) => i !== index);
+    cartRef.current = next; setCart(next); setEditing(null); submission.current = null;
+    if (removed.audio.uploadId !== audio.uploadId) removeUpload(removed.audio.uploadId);
+  };
+  const editOrder = index => {
+    const row = JSON.parse(JSON.stringify(cart[index]));
+    setOptions(row.options); setAudio(row.audio); setFaceIds(row.facePerformerIds || []);
+    setVariantName(row.name); setSelectedAudioName(row.songName); setEditing(index);
+  };
+  const create = async () => {
+    if (!cart.length && !validDraft()) return;
+    setBusy(true); setError("");
+    submission.current ||= crypto.randomUUID().replaceAll("-", "");
+    try {
+      const result = await api("/create", "POST", { scope, submissionId: submission.current, orders: cart.length ? cart : [snapshot()] });
+      setQueued(result); cartRef.current = []; setCart([]);
+      // Submitted uploads now belong to the queued order and must survive closing.
+      const submittedIds = new Set((cart.length ? cart : [snapshot()]).map(line => line.audio.uploadId));
+      if (!submittedIds.has(audio.uploadId)) removeUpload(audio.uploadId);
+      setAudio({ kind: "cove" }); audioPlayer.current?.pause();
+    } catch (e) {
+      if (e.status >= 400 && e.status < 500) { submission.current = null; setError(e.message); }
+      else setError(e.message + " Retry to recover this order. Its settings are held unchanged to prevent duplicates.");
+    }
+    finally { setBusy(false); }
+  };
   const portraitFaceControls = <fieldset className="pmv-face-picker"><legend>Faces to follow</legend>
     <p>Uses linked Cove face data first. If it does not cover the slice, matching uses a Cove face cover or performer portrait. Only performers linked to that video qualify.</p>
     <div className="pmv-grid"><Control label="Select by gender" help="Filters linked performers by Cove metadata. It does not infer gender from video frames.">{id => <select id={id} value={faceGender} onChange={e => setFaceGender(e.target.value)}><option value="female">Female</option><option value="male">Male</option><option value="trans">Trans performers</option><option value="all">All performers</option></select>}</Control></div>
     <div className="pmv-face-actions"><button type="button" onClick={() => setFaceIds([...new Set([...(faceIds || []), ...(preview?.performers || []).filter(p => p.hasReference && genderFits(p, faceGender)).map(p => p.id)])])}>Select matching</button><button type="button" onClick={() => setFaceIds([])}>Deselect all</button><small>{faceIds.length} selected</small></div>
     <div className="pmv-face-list">{(preview?.performers || []).filter(person => genderFits(person, faceGender) || faceIds.includes(person.id)).map(person => <button type="button" key={person.id} className={faceIds.includes(person.id) ? "selected" : ""} disabled={!person.hasReference} onClick={() => setFaceIds(current => current.includes(person.id) ? current.filter(id => id !== person.id) : [...current, person.id])} aria-pressed={faceIds.includes(person.id)}>{person.name}{!person.hasReference ? " · no reference image" : ""}</button>)}</div>
   </fieldset>;
+  if (queued) return <div className="pmv-overlay" role="dialog" aria-modal="true" aria-label="Order queued"><div className="pmv-dialog">
+    <h2>ORDER{queued.orderNumber} queued</h2><p>{queued.message}</p>
+    <p>Search Cove for <strong>PMVMAKER_ORDER{queued.orderNumber}_</strong> to compare the finished versions. Each output includes a settings receipt.</p>
+    <button onClick={close}>Done</button>
+  </div></div>;
   return <div className="pmv-overlay" role="dialog" aria-modal="true" aria-label="Create PMV"><div className="pmv-dialog">
-    <header><h2>Create PMV</h2><button onClick={cancel} aria-label="Close">×</button></header>
+    <header><h2>Create PMV</h2><button disabled={busy} onClick={cancel} aria-label="Close">×</button></header>
+    <fieldset disabled={busy || !!submission.current} className="pmv-working">
     <p>{preview ? `${preview.eligibleCount} eligible sources · ${preview.proposedFilename}` : "Checking sources…"}</p>
     {preview?.eligibilityNote && <p role="alert">{preview.eligibilityNote}</p>}
     {!!preview?.exclusions?.length && <details><summary>{preview.exclusions.length} excluded sources</summary><ul>{preview.exclusions.map((x, i) => <li key={i}>{x}</li>)}</ul></details>}
-    <SegmentSection options={options} setOptions={setOptions} />
+    <details className="pmv-advanced"><summary>Scene filters</summary><SegmentSection options={options} setOptions={setOptions} /></details>
     <fieldset><legend>Backing audio</legend><div className="pmv-grid">
       <Control label="Source" help="Choose a backing song from Cove, the configured music folder, a local song file, YouTube, or a Cove video's audio.">{id => <select id={id} value={audio.kind} onChange={e => changeAudioKind(e.target.value)}><option value="cove">Cove audio</option><option value="folder">Configured music folder</option><option value="upload">Choose song file</option><option value="youtube">YouTube URL</option><option value="video">Cove video audio</option></select>}</Control>
       {audio.kind === "upload" && <Control label="Song file" help="Upload an audio file directly from your computer. The companion stores it temporarily and removes it after the PMV job.">{id => <><input id={id} type="file" accept=".mp3,.wav,.flac,.m4a,.aac,.ogg,.opus,.aiff,audio/*" onChange={e => chooseSong(e.target.files?.[0])} /><small>{uploading ? "Uploading song…" : audio.uploadId ? `${audio.name} ready` : "Choose an audio file up to 200 MB."}</small></>}</Control>}
@@ -700,8 +779,19 @@ function PmvDialog({ context, close }) {
       onEnded={() => setPlayingUrl("")} onPause={() => setPlayingUrl("")}
       onError={() => { setPlayingUrl(""); setError("Could not play this track. Check that Cove can read it and your account can stream audio."); }} /></fieldset>
     <OptionForm options={options} setOptions={setOptions} portraitFaceControls={portraitFaceControls} />
+    <fieldset className="pmv-cart"><legend>Comparison cart · {cart.length}/20</legend>
+      <p>Add a version, change a few settings, and add another. Processing groups them under one searchable ORDER number.</p>
+      <Control label="Version name (optional)" help="Included in the output filename alongside the order number and version index.">{id => <input id={id} value={variantName} maxLength={80} placeholder={options.style} onChange={e => setVariantName(e.target.value)} />}</Control>
+      <button type="button" disabled={busy || uploading || (cart.length >= 20 && editing === null) || !audioReady || !segmentsReady || !preview?.canCreate} onClick={addOrder}>{editing === null ? "Add order to cart" : "Save version changes"}</button>
+      {cart.map((line, index) => <div className="pmv-cart-line" key={index}>
+        <div><strong>{index + 1}. {line.name}</strong><small>{line.songName} · {(line.options.layoutModes?.length ? line.options.layoutModes : ["full-screen"]).join(" + ")} · {line.options.previewSeconds ? "25 sec" : "full song"} · {effectSections.filter(([key]) => line.options[key] !== false).length} effects</small></div>
+        <button type="button" disabled={busy} onClick={() => editOrder(index)}>Edit</button>
+        <button type="button" disabled={busy} onClick={() => removeOrder(index)}>Remove</button>
+      </div>)}
+    </fieldset>
     {(error || settingsError) && <p role="alert">{error || settingsError}</p>}
-    <footer><HelpAction label="Cancel" help="Closes this popup without queueing a PMV."><button onClick={cancel}>Cancel</button></HelpAction><HelpAction label="Create" help="Starts a PMV job with the current source selection, backing audio, and edit controls."><button disabled={busy || uploading || !audioReady || !segmentsReady || !preview?.canCreate} onClick={create}>{busy ? "Queueing…" : "Create"}</button></HelpAction></footer>
+    </fieldset>
+    <footer><button disabled={busy} onClick={cancel}>Cancel</button><button disabled={busy || uploading || editing !== null || (!cart.length && (!audioReady || !segmentsReady || !preview?.canCreate))} onClick={create}>{busy ? "Checking and queueing…" : cart.length ? `Process orders (${cart.length})` : "Create PMV"}</button></footer>
   </div></div>;
 }
 

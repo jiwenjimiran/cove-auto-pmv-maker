@@ -153,6 +153,8 @@ def main(automated=False, progress=None, limit=None):
                            "duration": probe(output)["format"]["duration"]})
             if progress:
                 progress(len(checks), 22, name)
+        from creative_smoke import check_creative
+        checks.extend(check_creative(root / "creative", (lambda percent, message: progress(22 + percent / 100 * 3, 25, message)) if progress else None))
         print(json.dumps({"studio": resolve.GetProductName(), "version": resolve.GetVersionString(), "renders": checks}, indent=2))
         print("Inspect beat cuts, transition smoothness, flash/glitch accents, crop edges, and audio peaks before cleanup.")
         if automated or input("Type VALIDATED to enable this Resolve version: ").strip() == "VALIDATED":

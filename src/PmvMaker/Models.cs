@@ -31,6 +31,21 @@ public sealed class PmvSettings
 
 public sealed class PmvOptions
 {
+    public bool AutomaticPacing { get; set; } = true;
+    public bool BeatPunch { get; set; } = true;
+    public bool CameraDrift { get; set; } = true;
+    public bool ImpactRecoil { get; set; } = true;
+    public bool SpeedRamps { get; set; } = true;
+    public bool MotionEcho { get; set; } = true;
+    public bool HighlightBloom { get; set; } = true;
+    public bool RgbSplit { get; set; } = true;
+    public bool FreezeAccents { get; set; } = true;
+    public bool SmartFraming { get; set; } = true;
+    public bool ActionSync { get; set; } = true;
+    public bool MotionMatching { get; set; } = true;
+    public bool ColorPolish { get; set; } = true;
+    public int? PreviewSeconds { get; set; }
+    public int? RandomSeed { get; set; }
     public string Layout { get; set; } = "full-screen";
     public string[] LayoutModes { get; set; } = [];
     public bool UseVerticalVideosOnly { get; set; }
@@ -100,9 +115,24 @@ public sealed class AudioSelection
 
 public sealed class PmvRequest
 {
+    public string? SubmissionId { get; set; }
+    public string? Name { get; set; }
+    public List<PmvVariant>? Orders { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public long OrderNumber { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int VariantIndex { get; set; } = 1;
     public SourceScope Scope { get; set; } = new();
     public AudioSelection Audio { get; set; } = new();
     public PmvOptions? Options { get; set; }
+    public List<int>? FacePerformerIds { get; set; }
+}
+
+public sealed class PmvVariant
+{
+    public string Name { get; set; } = "";
+    public AudioSelection Audio { get; set; } = new();
+    public PmvOptions Options { get; set; } = new();
     public List<int>? FacePerformerIds { get; set; }
 }
 
