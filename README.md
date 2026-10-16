@@ -23,6 +23,10 @@ The Resolve render and compatibility checks have been exercised with Studio 21.1
 
 ## Current implementation notes
 
+### 0.2.2 — fix remote-browser submission over HTTP
+
+Order ID generation now works when opening Cove through a LAN HTTP address. The previous `crypto.randomUUID()` call required a secure browser context and ran outside the error handler, leaving the button stuck on **Queueing order…** without sending a request. IDs now use cryptographically secure `getRandomValues`, and generation failures restore the controls and show an error. Existing submission IDs remain unchanged on retry. After upgrading, reload Cove on the device where you create orders.
+
 ### 0.2.1 — responsive order queueing
 
 **Process orders** queues promptly; segment lookups, media checks, companion startup, and Resolve preparation run in the cancellable Cove job. Progress shows selection lookup, segment batches, source-file counts, and the current version. Versions sharing the same source scope and segment filters reuse resolved sources, then independently apply layout and timestamp settings. Changed filters get a separate lookup. Resolve/media/codec checks run in the companion job instead of being duplicated before acceptance. Preparation failures appear in Cove Jobs; remaining versions still run after a per-version failure.

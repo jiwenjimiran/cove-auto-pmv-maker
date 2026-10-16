@@ -1,6 +1,18 @@
 // src/index.jsx
 import React from "@cove/runtime/react";
 import { extensionFetch } from "@cove/runtime/api";
+
+// src/submission.js
+function createSubmissionId(cryptoProvider = globalThis.crypto) {
+  if (typeof cryptoProvider?.getRandomValues !== "function")
+    throw new Error("This browser cannot generate an order ID. Update the browser and retry.");
+  const bytes = cryptoProvider.getRandomValues(new Uint8Array(16));
+  bytes[6] = bytes[6] & 15 | 64;
+  bytes[8] = bytes[8] & 63 | 128;
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+// src/index.jsx
 var { useEffect, useRef, useState } = React;
 var base = "/api/ext/pmv";
 var companionAsset = "/api/extensions/assets/io.github.jiwenjimiran.auto-pmv-maker/companion/AutoPmvMakerCompanion.zip";
@@ -896,8 +908,8 @@ function PmvDialog({ context, close }) {
     if (!cart.length && !validDraft()) return;
     setBusy(true);
     setError("");
-    submission.current ||= crypto.randomUUID().replaceAll("-", "");
     try {
+      submission.current ||= createSubmissionId();
       const result = await api("/create", "POST", { scope, submissionId: submission.current, orders: cart.length ? cart : [snapshot()] });
       setQueued(result);
       cartRef.current = [];
@@ -907,7 +919,7 @@ function PmvDialog({ context, close }) {
       setAudio({ kind: "cove" });
       audioPlayer.current?.pause();
     } catch (e) {
-      if (e.status >= 400 && e.status < 500) {
+      if (!submission.current || e.status >= 400 && e.status < 500) {
         submission.current = null;
         setError(e.message);
       } else setError(e.message + " Retry to recover this order. Its settings are held unchanged to prevent duplicates.");

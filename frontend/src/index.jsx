@@ -1,6 +1,7 @@
 import React from "@cove/runtime/react";
 import { extensionFetch } from "@cove/runtime/api";
 import "./style.css";
+import { createSubmissionId } from "./submission.js";
 
 const { useEffect, useRef, useState } = React;
 const base = "/api/ext/pmv";
@@ -724,8 +725,8 @@ function PmvDialog({ context, close }) {
   const create = async () => {
     if (!cart.length && !validDraft()) return;
     setBusy(true); setError("");
-    submission.current ||= crypto.randomUUID().replaceAll("-", "");
     try {
+      submission.current ||= createSubmissionId();
       const result = await api("/create", "POST", { scope, submissionId: submission.current, orders: cart.length ? cart : [snapshot()] });
       setQueued(result); cartRef.current = []; setCart([]);
       // Submitted uploads now belong to the queued order and must survive closing.
@@ -733,7 +734,7 @@ function PmvDialog({ context, close }) {
       if (!submittedIds.has(audio.uploadId)) removeUpload(audio.uploadId);
       setAudio({ kind: "cove" }); audioPlayer.current?.pause();
     } catch (e) {
-      if (e.status >= 400 && e.status < 500) { submission.current = null; setError(e.message); }
+      if (!submission.current || (e.status >= 400 && e.status < 500)) { submission.current = null; setError(e.message); }
       else setError(e.message + " Retry to recover this order. Its settings are held unchanged to prevent duplicates.");
     }
     finally { setBusy(false); }
