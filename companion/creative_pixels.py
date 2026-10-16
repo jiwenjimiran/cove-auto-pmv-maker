@@ -29,13 +29,18 @@ def highlights(frame, threshold=.50):
     return values * (knee * knee * (3 - 2 * knee))[..., None] * 255
 
 
+def soften_look(frame, treated):
+    """Keep 20% of the treatment so glow, flares and bokeh retain source detail."""
+    return cv2.addWeighted(frame, .8, treated, .2, 0)
+
+
 def glow(frame, amount=1.0):
     h, w = frame.shape[:2]
     small = cv2.resize(highlights(frame), (max(16, w // 4), max(16, h // 4)))
     near = cv2.GaussianBlur(small, (0, 0), max(1, w / 220))
     wide = cv2.GaussianBlur(small, (0, 0), max(2, w / 65))
     bloom = cv2.resize(near * .65 + wide * .65, (w, h))
-    return screen(frame, bloom, .9 * amount)
+    return soften_look(frame, screen(frame, bloom, .9 * amount))
 
 
 def anamorphic(frame, amount=1.0):
@@ -43,7 +48,7 @@ def anamorphic(frame, amount=1.0):
     small = cv2.resize(highlights(frame, .65), (max(16, w // 4), max(16, h // 4)))
     streak = cv2.GaussianBlur(small, (0, 0), max(3, w * .055), sigmaY=.65)
     streak *= np.array([1.2, .85, .65], np.float32)
-    return screen(frame, cv2.resize(streak, (w, h)), 2.2 * amount)
+    return soften_look(frame, screen(frame, cv2.resize(streak, (w, h)), 2.2 * amount))
 
 
 def light_rays(frame, amount=1.0):
@@ -105,7 +110,7 @@ def swirly_bokeh(frame, mask, amount=1.0):
     blurred = cv2.GaussianBlur(blurred, (0, 0), max(.7, sw * .004 * amount))
     blurred = cv2.resize(blurred, (w, h))
     protected = mask[..., None]
-    return np.uint8(np.clip(frame * protected + blurred * (1 - protected), 0, 255))
+    return soften_look(frame, np.uint8(np.clip(frame * protected + blurred * (1 - protected), 0, 255)))
 
 
 def outline_echo(frame, amount):

@@ -34,7 +34,9 @@ class ExpressiveEffectTests(unittest.TestCase):
         plan = dict(dominant=None, hits=[], strength=1, drift=False, scale=0,
                     direction=1, color=False, bloom=True, cue={'luma': 112})
         out = image_effect(frame, .75, 2, plan)
-        self.assertGreater(np.abs(out.astype(float) - frame).mean(), 4)
+        delta = np.abs(out.astype(float) - frame).mean()
+        self.assertGreater(delta, .5)
+        self.assertLess(delta, 3)
 
     def test_each_look_has_a_visible_independent_change(self):
         frame = fixture()

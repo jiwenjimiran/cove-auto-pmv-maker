@@ -23,6 +23,10 @@ The Resolve render and compatibility checks have been exercised with Studio 21.1
 
 ## Current implementation notes
 
+### 0.3.2 — gentler glow, flares, and swirly bokeh
+
+Cinematic glow, anamorphic flares (the blue horizontal streaks), and swirly background bokeh now blend at **20% of their previous contribution**: about an 80% reduction. Blending back the original image preserves detail even when highlights would otherwise saturate, and reduces the entire bokeh treatment rather than only shrinking its swirl radius. The change applies at every strength setting, including existing saved settings and cart versions, without new configuration. Subject protection, effect timing, other effects, transitions, and the overlapping pipeline retain their existing behavior. Previously rendered files are not modified.
+
 ### 0.3.1 — overlapping preparation, rendering, and scans
 
 Orders now use a bounded pipeline. One version can animate its shots and build transitions while Resolve renders another. Completed outputs import into Cove and queue their full asset scan immediately, without waiting for the rest of the cart. In steady state this can mean **prepare version 3 / render version 2 / scan version 1**.
